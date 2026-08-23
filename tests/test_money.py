@@ -56,3 +56,11 @@ def test_lowercase_currency_accepted():
 def test_format_amount_pads_to_currency_decimals():
     assert format_amount(Decimal("10"), "USD") == "10.00"
     assert format_amount(Decimal("300"), "TWD") == "300"
+
+
+def test_format_amount_used_for_api_output():
+    """API 回傳的金額要符合幣別位數 —— DB 是 numeric(18,4)，
+    直接 str() 會變成 "25.0000"，對金流 API 來說是雜訊，caller 顯示時還得自己處理。"""
+    from decimal import Decimal
+    assert format_amount(Decimal("25.0000"), "USD") == "25.00"
+    assert format_amount(Decimal("9.9900"), "USD") == "9.99"

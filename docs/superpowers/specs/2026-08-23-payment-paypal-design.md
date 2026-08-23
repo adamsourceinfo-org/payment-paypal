@@ -511,27 +511,42 @@ PayPal 後台可以撤銷 / 重發 client secret，那是最後一道閘。
 
 ## 已知風險與未驗證項目
 
-### 2026-08-23 dev 實測結果
+### 2026-08-23 dev 實測結果（全部完成）
+
+用專屬的 sandbox app `adamsourceinfo-payments`（商家 `ckh-2@gmail.com`）與 sandbox
+買家 `sb-rcjkz51885153@personal.example.com` 跑完整流程。
 
 | 項目 | 狀態 |
 |---|---|
-| `--update-secrets`（Secret Manager 掛載） | ✅ **已驗證**。`/health` 回 `paypal.token: "ok"`，代表 secret 掛上且換得到 token。ci 這條路可以標記為驗過了 |
-| `run_migrations()` 自建 schema | ✅ 已驗證。刻意先把手動建的表刪掉，讓 app 自己跑；日誌 `migration 套用 ['001_init.sql']` |
-| Cloud SQL IAM 認證 | ✅ `server_user` 由 DB 回答為 `run-runtime@adamsourceinfo-dev.iam`，非環境變數回音 |
-| CI 不覆蓋手動設定 | ✅ 手動設的 `--max-instances=10` 在後續兩次 CI 部署後仍存在 |
+| `--update-secrets`（Secret Manager 掛載） | ✅ `/health` 回 `paypal.token: "ok"`。ci 這條路已驗證 |
+| `run_migrations()` 自建 schema | ✅ 刻意先刪表讓 app 自己跑；日誌 `migration 套用 ['001_init.sql']` |
+| Cloud SQL IAM 認證 | ✅ `server_user` 由 DB 回答為 `run-runtime@adamsourceinfo-dev.iam` |
+| CI 不覆蓋手動設定 | ✅ 手動設的 `--max-instances=10` 撐過多次部署 |
 | PR 拿不到 GCP 憑證 | ✅ PR run 上 6 個碰 GCP 的 job 全部 skipped |
-| webhook 簽章驗證（原始 bytes） | ✅ **真實 PayPal 送達並驗過**。`CHECKOUT.ORDER.APPROVED` 進來、驗簽成功、事件落地、訂單狀態自動更新為 `APPROVED`、`/v1/events` 讀得到 |
+| webhook 簽章驗證（原始 bytes） | ✅ 真實 PayPal 送達並驗過 |
 | API 表面（34 項） | ✅ 全數通過，見 `scripts/sandbox-smoke.py` |
-| PayPal 錯誤轉譯 | ✅ `INSTRUMENT_DECLINED`、`ORDER_NOT_APPROVED` 都回乾淨的 502 + `paypal_debug_id` |
-| **成功的 capture（錢真的移動）** | ❌ **未驗證**。sandbox 訪客結帳的通用測試卡（4111…、5555…）一律被拒；PayPal sandbox 要用**後台產生的專屬測試卡**或 sandbox 買家帳號，而後台被簡訊 2FA 擋住 |
-| **`invoice_id` 重複阻擋** | ❌ **未驗證**，被上一項連帶擋住 —— 它只在 capture 時才會觸發。另外它取決於商家帳號的「Block accidental payments」設定，那也要進後台才看得到。**在驗證之前，不能宣稱有第二道冪等防線；DB 的 unique 約束是唯一保證** |
-| 月訂閱的實際扣款與 `PAYMENT.SALE.COMPLETED` | ❌ 未驗證，同樣卡在買家授權 |
+| PayPal 錯誤轉譯 | ✅ `INSTRUMENT_DECLINED`、`ORDER_NOT_APPROVED` 都回 502 + `paypal_debug_id` |
+| **一次性訂單完整金流** | ✅ 建單 → 買家授權 → **capture 成功（COMPLETED）** → **部分退款成功（PARTIALLY_REFUNDED）** |
+| **月訂閱完整生命週期** | ✅ 建方案 → 建訂閱 → 買家同意 → `ACTIVATED` + **`PAYMENT.SALE.COMPLETED`（首月收到 9.99 USD）** |
+| **訂閱取消後不再扣款** | ✅ 取消前 `next_billing_time = 2026-09-23`；取消後 **該欄位消失**、狀態 `CANCELLED`，PayPal 與本服務一致 |
+| `caller_id IS NULL` 的事件不可見 | ✅ 實測時出現一筆對應不到 caller 的事件，游標序號跳號（id=4 缺），caller 讀不到 |
 
-**目前 dev 用的是從舊專案 `adamhsu-apps` 借來的 sandbox 憑證**（已確認只有 sandbox 有效、
-live 回 401，零真實金流風險），因為建立專屬 app 需要後台。webhook 是用 Webhooks Management API
-另外註冊的（`2UN45158XR4813125`），指向本服務自己的 URL，舊服務的 webhook 沒有受影響。
-**待辦：能登入後台後建立專屬的 `payment-paypal` sandbox app，並把 `PAYPAL_CLIENT_ID`
-從 Secret Manager 移回 `.cicd/env.dev`。**
+**取消測試的完整證據**（PayPal API 直接查詢）：
+
+```
+取消前：狀態 ACTIVE   首月已收 9.99 USD 於 2026-08-23T15:17:02Z
+        已完成扣款 1 次   下次扣款 2026-09-23T10:00:00Z
+取消後：狀態 CANCELLED 首月已收 9.99 USD（不變）
+        已完成扣款 1 次   下次扣款（無）
+```
+
+「次月不會扣款」無法真的等一個月，但 `next_billing_time` 消失是等價的可觀測證據。
+
+### 仍未驗證的一項
+
+| 項目 | 狀態 |
+|---|---|
+| `invoice_id` 重複阻擋 | ⚠️ **未驗證**。它只在 capture 時觸發，要重跑一次完整的買家授權流程；且取決於商家帳號的「Block accidental payments」設定。**在驗證之前不能宣稱有第二道冪等防線 —— DB 的 unique 約束是唯一保證**（該約束本身已實測通過） |
 
 ### 原始風險表
 

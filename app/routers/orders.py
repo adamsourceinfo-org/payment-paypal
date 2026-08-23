@@ -9,7 +9,7 @@ from app.auth import Caller, require
 from app.errors import (InvalidAmount, PayPalError, UnsupportedCurrency,
                         bad_request, not_found, upstream_error)
 from app.models import OrderCreate, RefundCreate
-from app.money import validate_amount
+from app.money import format_amount, validate_amount
 from app.paypal import orders as pp
 from app.store import orders as store
 
@@ -21,7 +21,7 @@ def _out(row: dict, approve: Optional[str] = None) -> dict:
         "id": str(row["id"]),
         "reference_id": row["reference_id"],
         "paypal_order_id": row.get("paypal_order_id"),
-        "amount": str(row["amount"]),
+        "amount": format_amount(row["amount"], row["currency"]),
         "currency": row["currency"],
         "status": row["status"],
         "created_at": row["created_at"],

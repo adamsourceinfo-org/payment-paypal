@@ -4,7 +4,7 @@ from app.auth import Caller, require
 from app.errors import (InvalidAmount, PayPalError, UnsupportedCurrency,
                         bad_request, not_found, upstream_error)
 from app.models import PlanCreate
-from app.money import validate_amount
+from app.money import format_amount, validate_amount
 from app.paypal import plans as pp
 from app.store import plans as store
 
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/v1/plans", tags=["plans"])
 
 def _out(row: dict) -> dict:
     return {"id": str(row["id"]), "name": row["name"],
-            "amount": str(row["amount"]), "currency": row["currency"],
+            "amount": format_amount(row["amount"], row["currency"]), "currency": row["currency"],
             "interval_unit": row["interval_unit"],
             "interval_count": row["interval_count"],
             "status": row["status"],
