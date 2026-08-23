@@ -497,13 +497,44 @@ PayPal 後台可以撤銷 / 重發 client secret，那是最後一道閘。
 
 ## 已知風險與未驗證項目
 
+### 2026-08-23 dev 實測結果
+
 | 項目 | 狀態 |
 |---|---|
-| `--update-secrets`（Secret Manager 掛載） | **`ci` 唯一還沒端對端驗過的路徑**，本專案第一個踩到。第一次 dev 部署的驗證重點放這裡 |
-| `invoice_id` 重複阻擋 | 取決於商家帳號的「Block accidental payments」設定，需在 sandbox 實測並確認該設定 |
+| `--update-secrets`（Secret Manager 掛載） | ✅ **已驗證**。`/health` 回 `paypal.token: "ok"`，代表 secret 掛上且換得到 token。ci 這條路可以標記為驗過了 |
+| `run_migrations()` 自建 schema | ✅ 已驗證。刻意先把手動建的表刪掉，讓 app 自己跑；日誌 `migration 套用 ['001_init.sql']` |
+| Cloud SQL IAM 認證 | ✅ `server_user` 由 DB 回答為 `run-runtime@adamsourceinfo-dev.iam`，非環境變數回音 |
+| CI 不覆蓋手動設定 | ✅ 手動設的 `--max-instances=10` 在後續兩次 CI 部署後仍存在 |
+| PR 拿不到 GCP 憑證 | ✅ PR run 上 6 個碰 GCP 的 job 全部 skipped |
+| webhook 簽章驗證（原始 bytes） | ✅ **真實 PayPal 送達並驗過**。`CHECKOUT.ORDER.APPROVED` 進來、驗簽成功、事件落地、訂單狀態自動更新為 `APPROVED`、`/v1/events` 讀得到 |
+| API 表面（34 項） | ✅ 全數通過，見 `scripts/sandbox-smoke.py` |
+| PayPal 錯誤轉譯 | ✅ `INSTRUMENT_DECLINED`、`ORDER_NOT_APPROVED` 都回乾淨的 502 + `paypal_debug_id` |
+| **成功的 capture（錢真的移動）** | ❌ **未驗證**。sandbox 訪客結帳的通用測試卡（4111…、5555…）一律被拒；PayPal sandbox 要用**後台產生的專屬測試卡**或 sandbox 買家帳號，而後台被簡訊 2FA 擋住 |
+| **`invoice_id` 重複阻擋** | ❌ **未驗證**，被上一項連帶擋住 —— 它只在 capture 時才會觸發。另外它取決於商家帳號的「Block accidental payments」設定，那也要進後台才看得到。**在驗證之前，不能宣稱有第二道冪等防線；DB 的 unique 約束是唯一保證** |
+| 月訂閱的實際扣款與 `PAYMENT.SALE.COMPLETED` | ❌ 未驗證，同樣卡在買家授權 |
+
+**目前 dev 用的是從舊專案 `adamhsu-apps` 借來的 sandbox 憑證**（已確認只有 sandbox 有效、
+live 回 401，零真實金流風險），因為建立專屬 app 需要後台。webhook 是用 Webhooks Management API
+另外註冊的（`2UN45158XR4813125`），指向本服務自己的 URL，舊服務的 webhook 沒有受影響。
+**待辦：能登入後台後建立專屬的 `payment-paypal` sandbox app，並把 `PAYPAL_CLIENT_ID`
+從 Secret Manager 移回 `.cicd/env.dev`。**
+
+### 原始風險表
+
+| 項目 | 狀態 |
+|---|---|
 | PayPal live 商業帳號 | ✅ 已確認可用（`adamsourceinfo@gmail.com`，live 頁面可建 app，已有兩個 live app 在跑） |
 | Cloud SQL 費用 | dev / prod 各一台 db-f1-micro，都會計費。dev 不用時可 `--activation-policy=NEVER` 停機 |
 | 同一商家帳號下有其他 app | sandbox 有 6 個、live 有 2 個既有 app。webhook 可能收到不屬於本服務的事件 → `caller_id IS NULL` 落地 |
+
+### `/healthz` 不能用 —— Google Frontend 會攔截
+
+**健康檢查路徑是 `/health` 而不是慣用的 `/healthz`，這是實測出來的必要條件。**
+在 `*.run.app` 上，Google Frontend 會把 `/healthz` 自己吃掉並回自己的 404 頁面，
+請求**根本不會進到容器**。證據：Cloud Run 的請求日誌裡 `/`、`/docs`、`/openapi.json`、
+`/v1/orders` 全部有紀錄，只有 `/healthz` 一筆都沒有。
+
+第一次部署就是這樣紅燈的 —— 服務其實完全健康，`/docs` 與 `/v1/*` 都正常。
 
 ### 健康檢查要證明得了東西
 
