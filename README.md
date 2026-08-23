@@ -63,12 +63,24 @@ CI 不跑測試，測試在本機驗過才推。
 ## 新增一個 caller
 
 ```bash
-export PGPASSWORD='<內建 postgres 帳號的密碼>'
 ./scripts/add-caller.sh dev my-service "orders:read,orders:write,events:read" "備註"
 ```
 
-明文 key 只會顯示一次，DB 裡只有 sha256。人連 DB 用內建的 `postgres` 帳號；
-`run-runtime` 那個 IAM 使用者是給服務用的。
+**不需要密碼。** 人跟服務走同一個機制：Cloud SQL IAM 認證，拿自己的 access token 當密碼。
+整套設計裡不存在 DB 密碼這種東西。
+
+每個環境一次性前置（把自己加成 IAM 使用者、並取得 app 建的表的權限）：
+
+```bash
+ME=$(gcloud config get-value account); PROJECT=adamsourceinfo-dev
+gcloud sql users create "$ME" --instance=payment-paypal-pg \
+  --project="$PROJECT" --type=cloud_iam_user
+# 表的擁有者是 run-runtime（app 的 migration 建的），要成為該角色的成員才存取得到
+psql -h 127.0.0.1 -p 5433 -U "$ME" -d payment_paypal \
+  -c 'GRANT "run-runtime@'"$PROJECT"'.iam" TO "'"$ME"'"'
+```
+
+明文 key 只會顯示一次，DB 裡只有 sha256。
 
 ## 開通與部署
 

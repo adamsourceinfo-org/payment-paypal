@@ -450,10 +450,24 @@ CI 不跑測試（既有決定：測試在開發時自行驗過才推）。本�
 產生一把亂數 key、算 sha256、透過 `cloud-sql-proxy` + `psql` INSERT 進 `api_keys`，
 把**明文 key 印出來一次**（之後再也拿不到）。
 
-**連線身分用內建的 `postgres` 帳號**（第 3 步 `GRANT` 時設的一次性密碼）。
-runbook 只建立了 `run-runtime` 這個 IAM 資料庫使用者給服務用；
-人要連的話另一個選擇是 `gcloud sql users create --type=cloud_iam_user` 建自己的 IAM 使用者，
-但那多一個要管理的授權對象，這裡不做。
+**沒有密碼 —— 人也走 IAM。** 跟服務端同一個機制：拿自己的 access token 當密碼。
+
+一開始的版本用內建 `postgres` 帳號配密碼，那是錯的：它憑空造出一個長期共用密碼，
+正好違背整套「Secret Manager 裡沒有任何 DB 機密」的設計。當時的理由（「多一個要管理的
+授權對象」）站不住腳 —— 每人一個、可個別撤銷、有稽核，那是優點不是成本。
+
+每個環境一次性前置：
+
+```bash
+ME=$(gcloud config get-value account)
+gcloud sql users create "$ME" --instance=payment-paypal-pg \
+  --project="$PROJECT" --type=cloud_iam_user
+# 表的擁有者是 run-runtime（app 的 migration 建的），所以要成為該角色的成員
+psql ... -c 'GRANT "run-runtime@'"$PROJECT"'.iam" TO "'"$ME"'"'
+```
+
+> 注意 IAM 使用者名稱的兩種格式：**人**用完整 email（`you@gmail.com`），
+> **服務帳號**用去掉 `.gserviceaccount.com` 的短格式（`run-runtime@<專案>.iam`）。
 
 ---
 
