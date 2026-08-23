@@ -271,7 +271,7 @@ pydantic 在進門就驗證 `currency` 在清單內，不在的話回 400 並列
 
 ```yaml
 service: payment-paypal
-health_path: /healthz
+health_path: /health
 allow_unauthenticated: true      # PayPal webhook 必須打得到
 
 db:                              # 只宣告一次，CI 依部署目標推導連線資訊
