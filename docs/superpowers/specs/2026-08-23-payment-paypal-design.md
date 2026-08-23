@@ -46,7 +46,7 @@
 
 ## 對外介面
 
-所有端點前綴 `/v1`。除 `/v1/webhooks` 與 `/healthz` 外都需要 `X-API-Key` 標頭。
+所有端點前綴 `/v1`。除 `/v1/webhooks` 與 `/health` 外都需要 `X-API-Key` 標頭。
 
 ```
 POST   /v1/orders                    建立一次性訂單，回 PayPal 付款連結     orders:write
@@ -67,7 +67,7 @@ GET    /v1/subscriptions/{id}                                               subs
 GET    /v1/events?after=<cursor>&limit=100   增量拉自己的事件               events:read
 
 POST   /v1/webhooks                  PayPal 專用。不驗 API key，驗 PayPal 簽章
-GET    /healthz                      健康檢查。不驗
+GET    /health                       健康檢查。不驗（不能用 /healthz，見下）
 ```
 
 FastAPI 自動產生 OpenAPI 文件，其他服務照著接。
@@ -336,7 +336,7 @@ PAYPAL_CLIENT_SECRET=payment-paypal-client-secret-prod:latest
 Cloud Run 起不來 → CI 的 smoke 紅燈 → 當場知道。
 
 **`PAYPAL_WEBHOOK_ID` 是唯一的例外，允許缺席** —— 有雞生蛋問題（見 runbook 第 6 步）。
-缺席時服務正常啟動，`/healthz` 回 `"webhook": "unconfigured"`，`POST /v1/webhooks` 回 503。
+缺席時服務正常啟動，`/health` 回 `"webhook": "unconfigured"`，`POST /v1/webhooks` 回 503。
 不會靜靜收下無法驗簽的請求。
 
 ---
@@ -538,7 +538,7 @@ live 回 401，零真實金流風險），因為建立專屬 app 需要後台。
 
 ### 健康檢查要證明得了東西
 
-`/healthz` 的 `db` 區塊裡 `server_user` 與 `database` 必須**由 DB 自己回答**，
+`/health` 的 `db` 區塊裡 `server_user` 與 `database` 必須**由 DB 自己回答**，
 不能是環境變數回音，否則證明不了任何事。`paypal` 區塊回報能否換到 access token，
 但**不回傳 token 本身或任何憑證片段**。
 
