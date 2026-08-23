@@ -61,7 +61,10 @@ def reset_token_cache() -> None:
     _token_cache = None
 
 
-def call(method: str, path: str, json=None, headers=None) -> dict:
+def call(method: str, path: str, json=None, headers=None,
+         content: bytes = None) -> dict:
+    """content 是給 webhook 驗簽用的 —— 那裡必須送出逐位元組指定的 body，
+    不能讓 httpx 重新序列化（重新序列化會讓簽章驗證失敗）。"""
     s = get_settings()
     hdrs = {"Authorization": f"Bearer {access_token()}",
             "Content-Type": "application/json"}
@@ -69,8 +72,12 @@ def call(method: str, path: str, json=None, headers=None) -> dict:
         hdrs.update(headers)
 
     with _http() as c:
-        r = c.request(method, f"{s.paypal_api_base}{path}",
-                      json=json, headers=hdrs)
+        if content is not None:
+            r = c.request(method, f"{s.paypal_api_base}{path}",
+                          content=content, headers=hdrs)
+        else:
+            r = c.request(method, f"{s.paypal_api_base}{path}",
+                          json=json, headers=hdrs)
 
     if r.status_code >= 400:
         try:

@@ -4,6 +4,7 @@ import app.config as cfg
 
 
 class FakeSettings:
+    """不是 frozen dataclass，測試才能逐項覆寫。"""
     app_env = "test"
     app_version = "test"
     paypal_env = "sandbox"
@@ -23,14 +24,11 @@ class FakeSettings:
 
 @pytest.fixture(autouse=True)
 def fake_settings(monkeypatch):
+    """塞進 app.config 的單例，而不是 patch get_settings。
+
+    各模組是 `from app.config import get_settings` 綁函式物件的，
+    patch 函式只會補到被列舉到的模組；改動單例則所有 importer 都吃得到。
+    """
     s = FakeSettings()
-    monkeypatch.setattr(cfg, "get_settings", lambda: s)
-    for mod in ("app.money", "app.db", "app.paypal.client",
-                "app.paypal.webhooks"):
-        try:
-            m = __import__(mod, fromlist=["get_settings"])
-        except ImportError:
-            continue
-        if hasattr(m, "get_settings"):
-            monkeypatch.setattr(m, "get_settings", lambda: s)
+    monkeypatch.setattr(cfg, "_settings", s)
     return s

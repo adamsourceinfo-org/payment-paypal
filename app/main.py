@@ -47,9 +47,14 @@ app = FastAPI(title="payment-paypal", version="1", lifespan=lifespan)
 
 
 def _mount():
-    from app.routers import health, orders
+    from app.routers import (events, health, orders, plans, subscriptions,
+                             webhooks)
     app.include_router(health.router)
     app.include_router(orders.router)
+    app.include_router(plans.router)
+    app.include_router(subscriptions.router)
+    app.include_router(events.router)
+    app.include_router(webhooks.router)
 
 
 _mount()
