@@ -140,6 +140,36 @@ check("沒有 events:read 的 caller → 403", s == 403)
 s, _ = call("GET", "/v1/events?after=0&limit=501", key=KEY_A)
 check("limit 超過上限 → 422", s == 422)
 
+print("\n[8] 金額正規化與欄位級錯誤")
+s, b = call("POST", "/v1/orders", key=KEY_A,
+            body={"reference_id": ref("int"), "amount": "7", "currency": "USD"})
+check("整數金額補成 .00", s == 201 and b.get("amount") == "7.00", str(b.get("amount")))
+s, b = call("POST", "/v1/orders", key=KEY_A,
+            body={"reference_id": ref("one"), "amount": "12.5", "currency": "USD"})
+check("一位小數補成兩位", s == 201 and b.get("amount") == "12.50", str(b.get("amount")))
+s, b = call("POST", "/v1/orders", key=KEY_A,
+            body={"reference_id": ref("bad"), "amount": "10.001", "currency": "USD"})
+d = b.get("detail", {}) if isinstance(b.get("detail"), dict) else {}
+check("三位小數 → 400 且指名 amount 欄位",
+      s == 400 and d.get("field") == "amount" and d.get("error") == "invalid_amount", str(d))
+s, b = call("POST", "/v1/orders", key=KEY_A,
+            body={"reference_id": ref("cur"), "amount": "10.00", "currency": "EUR"})
+d = b.get("detail", {}) if isinstance(b.get("detail"), dict) else {}
+check("不支援幣別 → 400 且指名 currency 欄位",
+      s == 400 and d.get("field") == "currency", str(d))
+
+# 方案也走同一套規則（訂閱本身不收金額，所以限制在方案這一層）
+s, b = call("POST", "/v1/plans", key=KEY_A,
+            body={"name": f"norm {ref('p')}", "amount": "15", "currency": "USD"})
+check("方案整數金額補成 .00", s == 201 and b.get("amount") == "15.00", str(b.get("amount")))
+s, b = call("POST", "/v1/plans", key=KEY_A,
+            body={"name": "bad", "amount": "9.999", "currency": "USD"})
+d = b.get("detail", {}) if isinstance(b.get("detail"), dict) else {}
+check("方案三位小數 → 400 指名 amount", s == 400 and d.get("field") == "amount", str(d))
+
+print("\n[9] 健康檢查在壞掉時要能讓 CI 擋下來")
+check("健康時回 200（ci smoke 只看狀態碼）", call("GET", "/health")[0] == 200)
+
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{'='*60}\n通過 {len(results)-len(failed)}/{len(results)}")
 if failed:

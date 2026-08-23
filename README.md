@@ -40,6 +40,10 @@ caller 越多營運負擔越重，而拉取的成本落在 caller 自己身上�
 
 - **幣別只支援 USD**（帳號限制），且**沒有預設值** —— 忘了傳幣別要是明確的錯誤，不是靜默通過。
   小數位數是幣別屬性（`{"USD": 2, "TWD": 0}`），不寫死 2。
+- **金額一律正規化成幣別位數**：`"7"` → `"7.00"`、`"12.5"` → `"12.50"`；
+  超過位數回 400 並**指名欄位**：`{"error":"invalid_amount","field":"amount","message":…}`。
+  收金額的端點有三個 —— `POST /v1/plans`、`POST /v1/orders`、`POST /v1/orders/{id}/refund`。
+  **`POST /v1/subscriptions` 沒有金額欄位**，月訂閱的金額在建方案時就決定了。
 - **PayPal base URL 由 `PAYPAL_ENV` 推導**，不做成設定。可設定就有設錯的餘地，
   而「prod 指到 sandbox」的代價是以為在收錢但沒有。
 - **一環境一組 Client ID，不是每 caller 一組。** Client ID 認證的是「錢進哪個商家帳號」，
