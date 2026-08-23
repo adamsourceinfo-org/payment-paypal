@@ -11,7 +11,7 @@ router = APIRouter(tags=["health"])
 # 自己回 404，請求根本不會進到容器（實測：請求日誌裡完全沒有這條路徑的紀錄，
 # 而 /、/docs、/v1/* 都有）。
 @router.get("/health")
-def healthz():
+def health():
     """db 的 server_user 與 database 由 DB 自己回答 ——
     回音環境變數證明不了任何事。paypal 區塊絕不回 token 本身。"""
     s = get_settings()
