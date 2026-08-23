@@ -20,8 +20,21 @@ DB="payment_paypal"
 PORT=5433
 
 if [[ -z "${PGPASSWORD:-}" ]]; then
-  echo "請先設定 PGPASSWORD（內建 postgres 帳號的密碼）。" >&2
-  echo "人連 DB 用內建的 postgres 帳號；run-runtime 那個 IAM 使用者是給服務用的。" >&2
+  cat >&2 <<'HELP'
+請先設定 PGPASSWORD —— 內建 postgres 帳號的密碼。
+
+人連 DB 用內建的 postgres 帳號；run-runtime 那個 IAM 使用者是給服務用的。
+密碼沒有存在任何地方（刻意的），忘記就直接重設一個：
+
+  PROJECT=adamsourceinfo-dev
+  export PGPASSWORD="$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
+  gcloud sql users set-password postgres --instance=payment-paypal-pg     --project="$PROJECT" --password="$PGPASSWORD" --quiet
+
+注意：資料表是 app 的 run_migrations() 以 run-runtime 身分建的，postgres 預設
+沒有權限。第一次要先讓 postgres 成為該角色的成員（只需做一次）：
+
+  GRANT "run-runtime@adamsourceinfo-dev.iam" TO postgres;
+HELP
   exit 1
 fi
 
