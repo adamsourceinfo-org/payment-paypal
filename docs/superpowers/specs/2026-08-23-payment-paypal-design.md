@@ -542,11 +542,30 @@ PayPal 後台可以撤銷 / 重發 client secret，那是最後一道閘。
 
 「次月不會扣款」無法真的等一個月，但 `next_billing_time` 消失是等價的可觀測證據。
 
-### 仍未驗證的一項
+### `invoice_id` 重複阻擋：已驗證，**有效**
 
 | 項目 | 狀態 |
 |---|---|
-| `invoice_id` 重複阻擋 | ⚠️ **未驗證**。它只在 capture 時觸發，要重跑一次完整的買家授權流程；且取決於商家帳號的「Block accidental payments」設定。**在驗證之前不能宣稱有第二道冪等防線 —— DB 的 unique 約束是唯一保證**（該約束本身已實測通過） |
+| `invoice_id` 重複阻擋 | ✅ **已驗證有效**。拿一個已成功 capture 的 `invoice_id`（`smoke-test:full-1787498028`）另建一筆訂單、買家授權後 capture，PayPal 回 `UNPROCESSABLE_ENTITY` / `DUPLICATE_INVOICE_ID`。**這個商家帳號的「Block accidental payments」是開啟的**，所以第二道冪等防線成立 |
+
+兩道防線各自的作用範圍不同，都要保留：
+
+| 防線 | 擋什麼 | 何時觸發 |
+|---|---|---|
+| DB `UNIQUE (caller_id, reference_id)` | 同一個 caller 用同一個 `reference_id` 重送**建單** | 建單當下，不用打 PayPal |
+| PayPal `DUPLICATE_INVOICE_ID` | 同一個 `invoice_id` 重複**收款** | capture 當下 |
+
+第一道擋掉絕大多數的網路重試；第二道是本服務 DB 出問題時的最後保險。
+
+### 支付方式（Apple Pay / Google Pay）
+
+**本服務對支付方式無感。** Orders v2 建立的訂單，消費者用 PayPal 餘額、信用卡、
+Apple Pay 或 Google Pay 付款，後端程式碼完全相同 —— 決定顯示哪些按鈕的是前端的
+PayPal JS SDK。本專案沒有前端，只回傳 `approve_url`。
+
+目前 app 上 Apple Pay / Google Pay / Expanded checkout 都是**灰掉不可勾選**的
+（帳號資格未開通）。要啟用需要：PayPal 開通資格 → 自建結帳前端 → Apple Pay 還要
+註冊網域且只在 Safari/iOS 出現。**那是另一個專案的範圍，本服務不會因此改動。**
 
 ### 原始風險表
 
