@@ -8,7 +8,7 @@
 
 ## 端點
 
-所有端點前綴 `/v1`，除 `/v1/webhooks` 與 `/healthz` 外都要 `X-API-Key`。
+所有端點前綴 `/v1`，除 `/v1/webhooks` 與 `/health` 外都要 `X-API-Key`。
 完整定義見部署後的 `/docs`（FastAPI 自動產生的 OpenAPI）。
 
 | | 端點 | scope |
@@ -76,7 +76,7 @@ export PGPASSWORD='<內建 postgres 帳號的密碼>'
 第一次部署才拿得到 Cloud Run URL，有 URL 才能去 PayPal 註冊 webhook，
 註冊後才有 `PAYPAL_WEBHOOK_ID` 可以填回 `.cicd/env.<env>`，然後再部署一次。
 
-`PAYPAL_WEBHOOK_ID` 缺席時服務**正常啟動但降級**：`/healthz` 回
+`PAYPAL_WEBHOOK_ID` 缺席時服務**正常啟動但降級**：`/health` 回
 `"webhook": "unconfigured"`，`POST /v1/webhooks` 回 503 —— 不會靜靜收下無法驗簽的請求。
 
 還要手動設 `--max-instances`：db-f1-micro 的 `max_connections` 約 25，

@@ -1,5 +1,5 @@
 service: payment-paypal
-health_path: /healthz
+health_path: /health
 # PayPal 的 webhook 必須打得到，所以服務對公網開放。
 # 這表示應用層的 API key 是唯一一道門 —— key 存 hash、可停用、有稽核欄位。
 allow_unauthenticated: true
