@@ -27,7 +27,7 @@ def create_plan(body: PlanCreate,
     try:
         amount = validate_amount(body.amount, body.currency)
     except (UnsupportedCurrency, InvalidAmount) as e:
-        raise bad_request(str(e))
+        raise bad_request(e)
     currency = body.currency.upper()
 
     try:

@@ -27,12 +27,15 @@ def validate_amount(amount: str, currency: str) -> Decimal:
     if value <= 0:
         raise InvalidAmount("金額必須大於 0")
 
-    exponent = -value.as_tuple().exponent
     allowed = DECIMALS[cur]
+    exponent = -value.as_tuple().exponent
     if exponent > allowed:
         raise InvalidAmount(
             f"{cur} 最多 {allowed} 位小數，收到 {amount!r}")
-    return value
+
+    # 正規化成該幣別的位數：caller 傳 "10" 就變成 10.00，
+    # 存進 DB 與送去 PayPal 的都是同一個正規化後的值。
+    return value.quantize(Decimal(1).scaleb(-allowed))
 
 
 def format_amount(value: Decimal, currency: str) -> str:

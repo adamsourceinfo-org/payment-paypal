@@ -38,7 +38,7 @@ def create_order(body: OrderCreate,
         amount = validate_amount(body.amount, body.currency)
     except (UnsupportedCurrency, InvalidAmount) as e:
         # 擋在進門處，不浪費一次 PayPal 呼叫
-        raise bad_request(str(e))
+        raise bad_request(e)
     currency = body.currency.upper()
 
     existing = store.get_by_reference(caller.caller_id, body.reference_id)
@@ -97,7 +97,7 @@ def refund(order_id: str, body: RefundCreate,
         res = pp.refund_capture(capture_id, amount=amount,
                                 currency=row["currency"], note=body.note)
     except (UnsupportedCurrency, InvalidAmount) as e:
-        raise bad_request(str(e))
+        raise bad_request(e)
     except PayPalError as e:
         raise upstream_error(e)
     status = "REFUNDED" if body.amount is None else "PARTIALLY_REFUNDED"

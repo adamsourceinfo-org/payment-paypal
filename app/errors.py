@@ -7,12 +7,27 @@
 from fastapi import HTTPException
 
 
-class UnsupportedCurrency(ValueError):
-    pass
+class FieldError(ValueError):
+    """帶欄位名的驗證錯誤 —— caller 要知道該改哪一個欄位，
+    只回一句訊息的話他得自己猜。"""
+
+    def __init__(self, message: str, field: str, code: str):
+        self.field = field
+        self.code = code
+        super().__init__(message)
+
+    def as_detail(self) -> dict:
+        return {"error": self.code, "field": self.field, "message": str(self)}
 
 
-class InvalidAmount(ValueError):
-    pass
+class UnsupportedCurrency(FieldError):
+    def __init__(self, message: str, field: str = "currency"):
+        super().__init__(message, field, "unsupported_currency")
+
+
+class InvalidAmount(FieldError):
+    def __init__(self, message: str, field: str = "amount"):
+        super().__init__(message, field, "invalid_amount")
 
 
 class PayPalError(Exception):
@@ -37,7 +52,11 @@ def not_found(what: str = "resource") -> HTTPException:
     return HTTPException(status_code=404, detail=f"{what} not found")
 
 
-def bad_request(detail: str) -> HTTPException:
+def bad_request(detail) -> HTTPException:
+    """detail 可以是字串，也可以是 FieldError —— 後者會展開成
+    {"error", "field", "message"}，讓 caller 知道要改哪個欄位。"""
+    if isinstance(detail, FieldError):
+        return HTTPException(status_code=400, detail=detail.as_detail())
     return HTTPException(status_code=400, detail=detail)
 
 
