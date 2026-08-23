@@ -248,9 +248,20 @@ dev 與 prod 是**兩個獨立的 webhook 註冊**，各自產生不同的 webho
 
 ### 金額與幣別
 
-**PayPal 對 TWD / JPY / HUF 不接受小數。** 送 `"300.00"` 會被拒。
-金額在 pydantic 進門就依幣別驗證，不等 PayPal 回 422。幣別由 caller 明確指定，沒有預設值 ——
-金錢的欄位不該有預設。
+**本帳號只能收 USD。** 已確認的帳號限制，不是設計選擇。
+
+實作方式：`SUPPORTED_CURRENCIES` 放 `env.common`，目前值為 `USD`。
+pydantic 在進門就驗證 `currency` 在清單內，不在的話回 400 並列出支援的幣別 ——
+不要送到 PayPal 才被拒（那時錯誤訊息對 caller 沒有幫助，而且浪費一次外部呼叫）。
+帳號將來開通其他幣別時，改一行設定即可，不必改程式。
+
+幣別由 caller **明確指定，沒有預設值** —— 金錢的欄位不該有預設。即使目前只支援一種也一樣：
+預設值會讓「忘了傳幣別」變成靜默通過，而不是明確的錯誤。
+
+**小數位數依幣別而定。** USD 是 2 位（`"10.00"` 合法）。
+但 PayPal 對 **TWD / JPY / HUF 不接受小數**，送 `"300.00"` 會被拒。
+所以小數位數要做成幣別的屬性（`{"USD": 2}`）而不是寫死 2，
+否則將來開通 TWD 時會踩到這個坑。
 
 ---
 
@@ -284,6 +295,7 @@ db:                              # 只宣告一次，CI 依部署目標推導連
 | `PAYPAL_CLIENT_SECRET` | **`secrets.<env>`** | Secret Manager | Secret Manager | **啟動失敗** |
 | `PAYPAL_TIMEOUT_SECONDS` | `env.common` | `10` | `10` | 用預設 10 |
 | `DB_POOL_MAX` | `env.common` | `3` | `3` | 用預設 3 |
+| `SUPPORTED_CURRENCIES` | `env.common` | `USD` | `USD` | 用預設 `USD` |
 | `LOG_LEVEL` | `env.<env>` | `debug` | `info` | 用預設 info |
 
 前六個是 CI 注入或推導的。`INSTANCE_CONNECTION_NAME`、`DB_USER`、`DB_INSTANCE`、`DB_NAME`
@@ -295,6 +307,7 @@ db:                              # 只宣告一次，CI 依部署目標推導連
 # .cicd/env.common
 PAYPAL_TIMEOUT_SECONDS=10
 DB_POOL_MAX=3
+SUPPORTED_CURRENCIES=USD
 
 # .cicd/env.dev
 LOG_LEVEL=debug
