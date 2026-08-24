@@ -77,11 +77,11 @@ CI 不跑測試，測試在本機驗過才推。
 
 ```bash
 ME=$(gcloud config get-value account); PROJECT=adamsourceinfo-dev
-gcloud sql users create "$ME" --instance=payment-paypal-pg \
+gcloud sql users create "$ME" --instance=apps-pg \
   --project="$PROJECT" --type=cloud_iam_user
 # 表的擁有者是 run-runtime（app 的 migration 建的），要成為該角色的成員才存取得到
 psql -h 127.0.0.1 -p 5433 -U "$ME" -d payment_paypal \
-  -c 'GRANT "run-runtime@'"$PROJECT"'.iam" TO "'"$ME"'"'
+  -c 'GRANT "run-payment-paypal@'"$PROJECT"'.iam" TO "'"$ME"'"'
 ```
 
 明文 key 只會顯示一次，DB 裡只有 sha256。
