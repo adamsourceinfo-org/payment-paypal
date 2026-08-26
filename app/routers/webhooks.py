@@ -11,6 +11,7 @@
 
 - `verifier.verify()` 打 PayPal 的驗簽 API（一次對外 HTTP）
 - pg8000 是**同步** driver，落地事件、更新狀態都是同步 DB
+- 推送的排程要建一個 Cloud Task（又一次對外 HTTP）
 
 同步呼叫寫在 `async def` 裡會卡住**整個事件迴圈** —— 那個實例上所有請求
 跟著排隊，包括 caller 正在同步查詢的 `GET /v1/orders/{id}`。行銷活動當天，
@@ -31,6 +32,8 @@ from app.paypal import webhooks as verifier
 from app.store import events as events_store
 from app.store import orders as orders_store
 from app.store import subscriptions as subs_store
+from app.urls import base_url
+from app.webhooks import dispatch
 
 log = logging.getLogger("webhook")
 
@@ -87,12 +90,14 @@ async def receive(request: Request):
     """最外層只做兩件事：讀原始 bytes、把工作丟進 threadpool。
 
     ⚠️ 這個函式裡**不可以**出現任何同步 I/O —— 見模組開頭的說明。
+    `base_url(request)` 只讀 header，是純運算。
     """
     raw = await request.body()          # 原始 bytes，驗簽必須用它
-    return await run_in_threadpool(_receive, raw, request.headers)
+    return await run_in_threadpool(
+        _receive, raw, request.headers, base_url(request))
 
 
-def _receive(raw: bytes, headers):
+def _receive(raw: bytes, headers, base: str):
     """同步，可以自由用 db 與對外 HTTP。"""
     s = get_settings()
     if not s.paypal_webhook_id:
@@ -119,9 +124,11 @@ def _receive(raw: bytes, headers):
         new_id = events_store.record(event_id, event_type, caller_id, kind,
                                      subject_id, raw.decode(), tx=tx)
         if new_id is None:
-            # PayPal 重送 —— 冪等，什麼都不做
-            return {"status": "duplicate"}
-        if kind == "subscription" and event_type in _SUB_STATUS:
+            # PayPal 重送 —— 事件早就在了，狀態也早就對了。
+            # 但**唯一還沒保證的是推送**：上次可能落地成功、排程失敗。
+            # 重送是唯一還有人來敲門的機會，所以確保 delivery 列存在（見下）。
+            pass
+        elif kind == "subscription" and event_type in _SUB_STATUS:
             subs_store.set_status(row["id"], _SUB_STATUS[event_type], tx=tx)
         elif kind == "order" and event_type in _ORDER_STATUS:
             status, captured = _ORDER_STATUS[event_type]
@@ -129,4 +136,17 @@ def _receive(raw: bytes, headers):
         elif caller_id is None:
             log.info("事件 %s 對應不到 caller，以 caller_id=NULL 落地", event_type)
 
+    # ⚠️ 排程是交易 commit 之後、回應之前的**最後一件事**。
+    # 一拿到 new_id 就排的話，Cloud Tasks 可以在幾十毫秒內送達，caller 收到
+    # 推送立刻回頭打 GET /v1/subscriptions/{id}，讀到的是**還沒 ACTIVE 的訂閱**。
+    # 那比「端點回 404」難查得多 —— 它不是壞掉，是偶爾看到舊狀態。
+    #
+    # ⚠️ schedule()／ensure() 永遠不對外拋例外（它們自己 try/except）。
+    # 排程失敗**不可以**讓這支回非 2xx：PayPal 的重送是為了「事件沒收到」，
+    # 不是為了「我們沒轉給 caller」，而且我們一旦回過 2xx 就沒有第二次機會。
+    if new_id is None:
+        dispatch.ensure(event_id, base)
+        return {"status": "duplicate"}
+
+    dispatch.schedule(new_id, caller_id, base)
     return {"status": "ok", "event_id": new_id}

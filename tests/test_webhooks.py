@@ -1,11 +1,13 @@
-"""PayPal 打進來的 webhook 接收器。
+"""PayPal 打進來的**入站**接收器。
 
-這支是全服務唯一的 `async def` handler，而它裡面有兩件會擋很久的事：
-驗簽的對外 HTTP、以及同步的 pg8000。
+（出站推送的 API 在 tests/test_push_api.py，投遞機制在 tests/test_delivery.py。）
+
+這支是全服務唯一的 `async def` handler，而它裡面有三件會擋很久的事：
+驗簽的對外 HTTP、同步的 pg8000、建 Cloud Task 的對外 HTTP。
 所以這裡除了業務邏輯之外，還釘住兩件結構性的事：
 
 - 處理**不在事件迴圈上**跑
-- 落地事件與更新狀態在**同一個交易**裡
+- 落地事件與更新狀態在**同一個交易**裡，而排程是交易之後的最後一件事
 """
 import asyncio
 import json
@@ -75,10 +77,26 @@ def env(monkeypatch):
         timeline.append("交易 commit")
     monkeypatch.setattr(wh.db, "transaction", _fake_tx)
 
+    scheduled, ensured = [], []
+
+    def _schedule(eid, cid, base):
+        scheduled.append((eid, cid, base))
+        timeline.append("排程推送")
+    monkeypatch.setattr(wh.dispatch, "schedule", _schedule)
+    monkeypatch.setattr(wh.dispatch, "ensure",
+                        lambda pid, base: ensured.append(pid))
+
     from app.main import app
     client = TestClient(app, raise_server_exceptions=False)
     return {"client": client, "subs": subs, "events": events,
+            "scheduled": scheduled, "ensured": ensured,
             "timeline": timeline, "counters": counters}
+
+
+@contextmanager
+def _passthrough_tx():
+    """不連 DB 的交易替身。store 都被 monkeypatch 掉了，tx 傳什麼都行。"""
+    yield object()
 
 
 def _ok_verify(monkeypatch, result=True, spy=None):
@@ -163,8 +181,8 @@ def test_payment_failed_does_not_change_status(env, monkeypatch):
 # --- 併發模型 ---------------------------------------------------------
 
 def test_處理不在事件迴圈上跑(env, monkeypatch):
-    """⚠️ 這一支是全服務唯一的 async handler，而它裡面有驗簽的對外 HTTP
-    與同步的 pg8000。跑在事件迴圈上的話，
+    """⚠️ 這一支是全服務唯一的 async handler，而它裡面有驗簽的對外 HTTP、
+    同步的 pg8000、以及建 Cloud Task 的對外 HTTP。跑在事件迴圈上的話，
     那個實例上**所有**請求跟著排隊 —— 包括 caller 正在查的
     `GET /v1/orders/{id}`。行銷活動當天，一筆 webhook 就是幾百毫秒的全實例停擺。
 
@@ -203,6 +221,88 @@ def test_落地與狀態更新在同一個交易裡(env, monkeypatch):
         "id": "e-tx", "event_type": "PAYMENT.SALE.COMPLETED",
         "resource": {"billing_agreement_id": "I-TX"}})
     assert env["counters"]["transactions"] == 1
+
+
+def test_排程晚於狀態更新且在交易commit之後(env, monkeypatch):
+    """⚠️ 一拿到 event id 就排的話，Cloud Tasks 可以在幾十毫秒內送達，
+    caller 收到推送立刻回頭打 `GET /v1/subscriptions/{id}`，
+    讀到的是**還沒 ACTIVE 的訂閱**。
+
+    那比「事件那一列還看不到」難查得多 —— 它不是壞掉，是偶爾看到舊狀態。
+    """
+    _ok_verify(monkeypatch)
+    env["subs"].add("I-ORDER")
+    env["client"].post("/v1/webhooks", json={
+        "id": "e-order", "event_type": "PAYMENT.SALE.COMPLETED",
+        "resource": {"billing_agreement_id": "I-ORDER"}})
+    assert env["timeline"] == ["更新訂閱狀態", "交易 commit", "排程推送"]
+
+
+def test_落地成功就排程且帶著自己的網址(env, monkeypatch):
+    _ok_verify(monkeypatch)
+    row = env["subs"].add("I-SCH")
+    env["client"].post("/v1/webhooks", json={
+        "id": "e-sch", "event_type": "PAYMENT.SALE.COMPLETED",
+        "resource": {"billing_agreement_id": "I-SCH"}})
+    assert len(env["scheduled"]) == 1
+    event_id, caller_id, base = env["scheduled"][0]
+    assert (event_id, caller_id) == (1, row["caller_id"])
+    assert base.startswith("http")            # 內部端點的絕對網址由它推導
+
+
+def test_重送走ensure而不是schedule(env, monkeypatch):
+    """⚠️ 照舊「什麼都不做」是不夠的：如果上一次落地成功、排程卻失敗
+    （Cloud Tasks 當下不可用），那筆事件到現在還沒有任何人排出去過 ——
+    而重送正是唯一還有人來敲門的機會。"""
+    client = env["client"]
+    _ok_verify(monkeypatch)
+    ev = {"id": "WH-DUP", "event_type": "PAYMENT.SALE.COMPLETED", "resource": {}}
+    client.post("/v1/webhooks", json=ev)
+    client.post("/v1/webhooks", json=ev)
+    assert env["ensured"] == ["WH-DUP"]       # 用 PayPal 的全域 event id
+    assert len(env["scheduled"]) == 1         # 第二次沒有再排一遍
+
+
+def test_CloudTasks掛了時入站仍然回2xx且那列被標成failed(monkeypatch):
+    """⚠️ 上游的重送是為了「事件沒收到」，不是為了「我們沒轉給 caller」。
+    反過來做的話：PayPal 重送 → 去重擋掉 → 早退 → **永遠不會補推**，
+    而且我們還白白讓 PayPal 重送了好幾次。
+
+    這條刻意跑**真的** `dispatch.schedule()`（只把最底層的建 task 換成會拋的），
+    因為要證明的正是「它自己吞掉例外」。所以它不用 env fixture ——
+    那個 fixture 把 schedule 換成假的，換掉就什麼都沒測到了。
+    """
+    from app.main import app
+    from app.webhooks import dispatch
+
+    _ok_verify(monkeypatch)
+    monkeypatch.setattr(wh.db, "transaction", _passthrough_tx)
+    monkeypatch.setattr(wh.events_store, "record",
+                        lambda *a, **k: 1234)
+    monkeypatch.setattr(wh.subs_store, "get_by_paypal_id",
+                        lambda p, tx=None: {"id": "s-1", "caller_id": "c1"})
+    monkeypatch.setattr(wh.subs_store, "set_status",
+                        lambda sid, status, period_end=None, tx=None: None)
+    monkeypatch.setattr(dispatch.endpoints_store, "get_active",
+                        lambda cid, tx=None: {"id": "ep-1",
+                                              "url": "https://c.example/h"})
+    monkeypatch.setattr(dispatch.deliveries_store, "create",
+                        lambda *a, **k: {"id": "d-1", "caller_id": "c1"})
+    monkeypatch.setattr(dispatch.tasks, "enqueue_delivery",
+                        lambda cid, url: (_ for _ in ()).throw(
+                            RuntimeError("Cloud Tasks 掛了")))
+    marked = {}
+    monkeypatch.setattr(dispatch.deliveries_store, "mark_failed",
+                        lambda did, st, err, tx=None: marked.update(
+                            id=did, error=err))
+
+    r = TestClient(app, raise_server_exceptions=False).post("/v1/webhooks", json={
+        "id": "e-boom", "event_type": "PAYMENT.SALE.COMPLETED",
+        "resource": {"billing_agreement_id": "I-BOOM"}})
+
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    # 而且那一列被標成 failed/attempts=0 —— sweep 會把它撿回去重排
+    assert marked["id"] == "d-1" and marked["error"].startswith("enqueue:")
 
 
 def test_事件內容原文落地(env, monkeypatch):

@@ -27,6 +27,15 @@ class Settings:
     public_base_url: Optional[str]
     db_pool_max: int
     db_pool_timeout_seconds: float
+    # 事件推送。**兩把機密缺席時不啟動失敗，而是關閉推送** ——
+    # 第一次部署時 secret 還沒建，硬性必填會讓服務起不來，
+    # 而沒有推送的服務仍然是完全可用的服務（GET /v1/events 還在）。
+    webhook_signing_key: Optional[str]
+    internal_key: Optional[str]
+    webhook_timeout_seconds: float
+    webhook_enqueue_timeout_seconds: float
+    tasks_queue_prefix: str
+    tasks_location: str
     supported_currencies: frozenset
     log_level: str
     db_instance: Optional[str]
@@ -36,6 +45,11 @@ class Settings:
     @property
     def paypal_api_base(self) -> str:
         return PAYPAL_API_BASE[self.paypal_env]
+
+    @property
+    def push_configured(self) -> bool:
+        """兩把都要有才推得動：一把用來簽給 caller，一把用來認自己的內部端點。"""
+        return bool(self.webhook_signing_key and self.internal_key)
 
     @property
     def db_configured(self) -> bool:
@@ -57,6 +71,8 @@ def _optional(name: str):
     會把**換行也存進去**。Cloud Run 原樣注入，於是值變成 "abc\n"。
 
     症狀依用途而異，而且都很難查：
+    - `INTERNAL_KEY` → 內部端點永遠回 401（比對的另一邊是 trim 過的）
+    - `WEBHOOK_SIGNING_KEY` → 簽章算得出來但跟別人算的不同
     - `PAYPAL_WEBHOOK_ID` → PayPal 驗簽永遠回 FAILURE
 
     `_required()` 本來就 strip，所以 client secret 一直沒事 ——
@@ -96,6 +112,20 @@ def load_settings() -> Settings:
         # 不做成無限等：見 app/db.py 的 PoolExhausted。
         db_pool_timeout_seconds=float(
             os.environ.get("DB_POOL_TIMEOUT_SECONDS", "5")),
+        webhook_signing_key=_optional("WEBHOOK_SIGNING_KEY"),
+        internal_key=_optional("INTERNAL_KEY"),
+        webhook_timeout_seconds=float(
+            os.environ.get("WEBHOOK_TIMEOUT_SECONDS", "10")),
+        # 建 task 是一次對外 HTTP，而它就在回 PayPal 2xx 的路徑上。
+        # Cloud Tasks API 一慢，ACK 就慢，PayPal 超時就重送 —— 事故當下再加一輪流量。
+        # 所以給它一個短 timeout，逾時就交給 sweep 補。
+        webhook_enqueue_timeout_seconds=float(
+            os.environ.get("WEBHOOK_ENQUEUE_TIMEOUT_SECONDS", "2")),
+        # per-caller queue 是 {prefix}-{消毒後的 caller}-{雜湊}；
+        # prefix 本身是退路用的共用 queue。
+        tasks_queue_prefix=os.environ.get(
+            "TASKS_QUEUE_PREFIX", "payment-paypal-deliveries"),
+        tasks_location=os.environ.get("TASKS_LOCATION", "asia-east1"),
         supported_currencies=currencies,
         log_level=os.environ.get("LOG_LEVEL", "info"),
         # 這三個由 CI 依部署目標推導注入，寫進 .cicd/env.* 會被 verify 擋下

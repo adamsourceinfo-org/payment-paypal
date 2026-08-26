@@ -30,6 +30,11 @@ class InvalidAmount(FieldError):
         super().__init__(message, field, "invalid_amount")
 
 
+class InvalidField(FieldError):
+    def __init__(self, message: str, field: str):
+        super().__init__(message, field, "invalid_field")
+
+
 class PayPalError(Exception):
     """PayPal 回非 2xx。debug_id 是向 PayPal 客服查詢的唯一憑據，一定要留。"""
 

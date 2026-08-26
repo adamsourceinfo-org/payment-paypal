@@ -15,7 +15,11 @@ class _RedactFilter(logging.Filter):
 
     def filter(self, record):
         s = get_settings()
-        secrets = [v for v in (s.paypal_client_secret,) if v]
+        # 推送另外帶進兩把：INTERNAL_KEY 與 WEBHOOK_SIGNING_KEY。
+        # ⚠️ 逐 caller **推導**出來的簽章密鑰不在這個名單裡（那是無界集合，
+        # 遮不完）。所以規則是：app/routers/push.py 的回應 body 永遠不進 log。
+        secrets = [v for v in (s.paypal_client_secret,
+                               s.internal_key, s.webhook_signing_key) if v]
         try:
             msg = record.getMessage()
         except Exception:                       # noqa: BLE001
@@ -63,14 +67,18 @@ def _pool_exhausted(request, exc):
 
 
 def _mount():
-    from app.routers import (events, health, orders, plans, subscriptions,
-                             webhooks)
+    # ⚠️ webhooks 是**入站**（PayPal 打進來），push 是**出站**（我們打給 caller）。
+    # 兩支不同方向、不同認證，名字刻意分開。
+    from app.routers import (events, health, internal, orders, plans, push,
+                             subscriptions, webhooks)
     app.include_router(health.router)
     app.include_router(orders.router)
     app.include_router(plans.router)
     app.include_router(subscriptions.router)
     app.include_router(events.router)
     app.include_router(webhooks.router)
+    app.include_router(push.router)
+    app.include_router(internal.router)
 
 
 _mount()

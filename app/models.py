@@ -35,3 +35,9 @@ class SubscriptionCreate(BaseModel):
     subscriber_email: Optional[str] = None
     return_url: Optional[str] = None
     cancel_url: Optional[str] = None
+
+
+class WebhookEndpointPut(BaseModel):
+    url: str = Field(
+        min_length=1, max_length=2000,
+        description="推送目標，只收 https://。內網位址與 .internal 一律拒絕")

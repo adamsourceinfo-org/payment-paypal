@@ -26,7 +26,7 @@
 |---|---|---|
 | 1 | 訂單存在自己的 Cloud SQL，不做純轉發代理 | 金流服務沒有自己的帳就對不起帳。冪等、caller 歸屬、爭議舉證都需要本地紀錄 |
 | 2 | 方案（plan）由本服務提供管理 API，不是寫死在設定檔 | caller 不必碰 PayPal 後台；方案與訂閱在同一套 API 裡 |
-| 3 | caller 靠**拉取 + 事件流**得知狀態變化，本服務不主動推送 | 推送要一整套可靠送達子系統（重試、退避、死信）。caller 會持續增加，推送的營運負擔全落在本服務身上；拉取的成本落在 caller 自己身上 |
+| 3 | ~~caller 靠**拉取 + 事件流**得知狀態變化，本服務不主動推送~~ **（2026-08-26 推翻，見下）** | 原理由：推送要一整套可靠送達子系統（重試、退避、死信）。caller 會持續增加，推送的營運負擔全落在本服務身上；拉取的成本落在 caller 自己身上 |
 | 4 | API key 每 caller 一把，存 DB，帶權限，只存 hash | 可單獨停用、可稽核、新增 caller 不必重新部署 |
 | 5 | 機密走 Secret Manager，部署時掛成環境變數 | `ci` 契約原生支援。執行時呼叫 Secret Manager API 的額外安全性很有限（見「安全邊界」） |
 | 6 | PayPal API base URL 由 `PAYPAL_ENV` 推導，不做成設定 | 可設定就有設錯的餘地，而「prod 指到 sandbox」的代價是以為在收錢但沒有 |
@@ -39,8 +39,34 @@
 - **PayPal Multiparty（多商家收款）**。已確認所有 caller 都是自己的服務，錢進同一個帳號。
   將來若要支援外部商家收自己的錢，那是 Partner Referrals + `PayPal-Auth-Assertion` 的另一個等級，
   屆時另開專案期程。資料模型不為此預留欄位（YAGNI）。
-- **主動推送事件給 caller**。事件表就是將來要做推送時的來源，不會白做。
+- ~~**主動推送事件給 caller**~~。**這一條在 2026-08-26 被推翻了**（見下）。
+  最後一句話仍然成立，而且正是新設計的起點：「事件表就是將來要做推送時的來源，不會白做。」
 - **PayPal 以外的金流**。服務名綁 PayPal 是刻意的。
+
+### ⚠️ 決策 3 已被推翻：服務現在會主動推送
+
+**新設計是兩個服務共用的一份，寫在 `payment-ecpay` 底下 ——
+這裡刻意不再抄一份**（抄一份就會漂移，而漂移的規格比沒有規格更糟）：
+
+- `~/repository/adamsourceinfo/payment-ecpay/docs/superpowers/specs/2026-08-26-burst-resilience-design.md`
+- `~/repository/adamsourceinfo/payment-ecpay/docs/superpowers/specs/2026-08-25-webhook-delivery-design.md`
+
+推翻它的是兩件當時沒想到的事：
+
+**一、caller 也 scale to zero，「拉取的成本落在 caller 自己身上」不成立。**
+caller 跑在 Cloud Run，沒有流量時沒有任何 process 在跑，也就沒有人去拉。
+使用者剛付完款那一刻沒問題（他自己的請求就會觸發拉取），但**每月續期扣款**
+那筆錢進來時，沒有任何人在跟 caller 講話。要修掉那個延遲，每一個 caller 都得
+自己開一個 Cloud Scheduler、管一把密鑰、維護一支只為了叫醒自己而存在的端點
+—— 那正是原決策想避免的「caller 越多營運負擔越重」，只是負擔跑到了另一邊。
+
+**二、那「一整套子系統」現在租得到。**
+重試、指數退避、放棄不必自己寫 —— Cloud Tasks 就是那套子系統，
+而且它不需要常駐 process，跟 scale-to-zero 天生共存。
+
+**推送不取代拉取，是第二條出口。** `events` 表、`GET /v1/events`、游標語意
+一個位元組都沒動；沒註冊端點的 caller 完全無感。而拉取仍然是推送的安全網 ——
+有界的重試不等於保證送達。
 
 ---
 
