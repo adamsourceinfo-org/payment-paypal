@@ -13,7 +13,9 @@ class FakeSettings:
     paypal_client_secret = "csecret"
     paypal_webhook_id = "WH-TEST"
     paypal_timeout_seconds = 5.0
+    public_base_url = None
     db_pool_max = 3
+    db_pool_timeout_seconds = 5.0
     supported_currencies = frozenset({"USD"})
     log_level = "debug"
     db_instance = "proj:region:inst"

@@ -11,7 +11,7 @@ BASE = {
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for k in ("PAYPAL_ENV", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET",
-              "PAYPAL_WEBHOOK_ID", "SUPPORTED_CURRENCIES"):
+              "PAYPAL_WEBHOOK_ID", "SUPPORTED_CURRENCIES", "PUBLIC_BASE_URL"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -56,3 +56,18 @@ def test_currencies_parsed(monkeypatch):
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("SUPPORTED_CURRENCIES", "USD, eur")
     assert load_settings().supported_currencies == frozenset({"USD", "EUR"})
+
+
+
+def test_可選機密的前後空白要被strip掉(monkeypatch):
+    """⚠️ Secret Manager 存的是位元組，而最自然的建立方式
+    （`python3 -c 'print(...)' | gcloud secrets create --data-file=-`）
+    會把**換行也存進去**，Cloud Run 原樣注入。
+
+    `_required()` 本來就 strip，所以 client secret 一直沒事 ——
+    可選的那些必須跟上，否則同一個 repo 裡兩種行為。
+    """
+    for k, v in BASE.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("PAYPAL_WEBHOOK_ID", "WH-1\n")
+    assert load_settings().paypal_webhook_id == "WH-1"

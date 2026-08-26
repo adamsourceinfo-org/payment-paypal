@@ -24,7 +24,9 @@ class Settings:
     paypal_client_secret: str
     paypal_webhook_id: Optional[str]
     paypal_timeout_seconds: float
+    public_base_url: Optional[str]
     db_pool_max: int
+    db_pool_timeout_seconds: float
     supported_currencies: frozenset
     log_level: str
     db_instance: Optional[str]
@@ -47,6 +49,22 @@ def _required(name: str) -> str:
     return v
 
 
+def _optional(name: str):
+    """可以缺席的機密。**一定要 strip。**
+
+    ⚠️ Secret Manager 存的是位元組，而最自然的建立方式
+    （`python3 -c 'print(...)' | gcloud secrets create --data-file=-`）
+    會把**換行也存進去**。Cloud Run 原樣注入，於是值變成 "abc\n"。
+
+    症狀依用途而異，而且都很難查：
+    - `PAYPAL_WEBHOOK_ID` → PayPal 驗簽永遠回 FAILURE
+
+    `_required()` 本來就 strip，所以 client secret 一直沒事 ——
+    這幾個可選的必須跟上，否則同一個 repo 裡兩種行為。
+    """
+    return (os.environ.get(name) or "").strip() or None
+
+
 def load_settings() -> Settings:
     paypal_env = _required("PAYPAL_ENV")
     if paypal_env not in PAYPAL_API_BASE:
@@ -67,11 +85,17 @@ def load_settings() -> Settings:
         paypal_env=paypal_env,
         paypal_client_id=_required("PAYPAL_CLIENT_ID"),
         paypal_client_secret=_required("PAYPAL_CLIENT_SECRET"),
-        # 唯一允許缺席的：第一次部署時還沒有 Cloud Run URL，
+        # 允許缺席的其中一個：第一次部署時還沒有 Cloud Run URL，
         # 就還沒辦法去 PayPal 註冊 webhook，就還拿不到這個 id。
-        paypal_webhook_id=os.environ.get("PAYPAL_WEBHOOK_ID") or None,
+        paypal_webhook_id=_optional("PAYPAL_WEBHOOK_ID"),
         paypal_timeout_seconds=float(os.environ.get("PAYPAL_TIMEOUT_SECONDS", "10")),
+        # 沒設就由請求自身的 scheme+host 推導 —— 第一次部署時還不知道自己的網址。
+        public_base_url=(os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/") or None,
         db_pool_max=int(os.environ.get("DB_POOL_MAX", "3")),
+        # 借不到連線就等這麼久，然後 PoolExhausted → 503。
+        # 不做成無限等：見 app/db.py 的 PoolExhausted。
+        db_pool_timeout_seconds=float(
+            os.environ.get("DB_POOL_TIMEOUT_SECONDS", "5")),
         supported_currencies=currencies,
         log_level=os.environ.get("LOG_LEVEL", "info"),
         # 這三個由 CI 依部署目標推導注入，寫進 .cicd/env.* 會被 verify 擋下
