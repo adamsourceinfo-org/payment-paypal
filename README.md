@@ -276,6 +276,41 @@ curl -s -X POST "$BASE/v1/webhook-endpoint/test" -H "X-API-Key: $KEY"
 - **`/health` 報告積壓的死信，但不因此回 503。** 死信通常代表 caller 壞了，
   用 503 表達會讓 CI 的 smoke 從「我們部署成功了嗎」變成「所有 caller 今天都好嗎」。
 
+## 模擬頁（只有 sandbox 有）
+
+`GET /demo` —— 把單筆付款與訂閱付款從頭到尾走一次，順便看得到事件推送的結果。
+
+```
+https://payment-paypal-<hash>-de.a.run.app/demo
+```
+
+**prod 沒有這組路由。** `app/main.py` 只在 `paypal_env == "sandbox"` 時掛上它 ——
+判斷條件綁 `paypal_env` 不綁 `APP_ENV`，因為真正決定「會不會動到真的錢」的是前者。
+prod 是 `live`，`/demo` 回 404。
+
+### 用之前要先有一個 sandbox 買家帳號
+
+developer.paypal.com → Testing Tools → **Sandbox Accounts** → 挑一個
+**Personal** 類型的帳號，記下 email 與密碼（密碼可以在那頁重設）。
+跳到 PayPal 之後就是用它登入付款。**沒有它，整條路會停在 approve 頁。**
+
+### 它證明什麼、不證明什麼
+
+✅ 證明：建單 → PayPal → 導回 → capture 是通的；事件會落地；推送會被排進
+Cloud Tasks、打到端點、而且端點驗得過簽章。
+
+❌ **不是 caller 的接入範例。** 它就是服務本人 —— 沒有 API key、
+沒有跨服務的信任邊界。caller 要抄的東西在〈怎麼接事件推送〉那一節。
+
+### demo 的資料不會混進真 caller
+
+所有 demo 資料的 `caller_id` 都是 `demo`，而每張業務表都有這個欄位、
+`GET /v1/events` 的游標本來就不匹配別人的。要清掉就是刪 `caller_id = 'demo'` 的列。
+
+⚠️ demo 路由**不驗 API key**。dev 服務是公開的（PayPal 的 webhook 必須打得到），
+所以任何知道網址的人都能建 sandbox 訂單。判斷是可接受：假錢、dev DB、資料隔離。
+`/demo/sink` 則**一定驗簽** —— 它是唯一一支「別人打得到而且我們會據以行動」的端點。
+
 ## 本機開發
 
 ```bash
