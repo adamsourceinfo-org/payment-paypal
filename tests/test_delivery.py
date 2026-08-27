@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+# ⚠️ app.main 不在模組頂端 import：它在模組層就會跑 mount_routers(app)，
+# 而那會呼叫 get_settings()。在測試模組頂端 import 的話，那一行發生在 autouse 的
+# fake_settings fixture 之前，會去讀真的環境變數然後死在「缺少必要環境變數」。
 from app.routers import internal as internal_router
 from app.webhooks import dispatch, signing, tasks
 
@@ -204,7 +206,9 @@ def test_嘗試次數來自我們自己的欄位而不是CloudTasks的header(wir
 # --- 內部端點 ---------------------------------------------------------
 
 @pytest.fixture
-def client():
+def client(fake_settings):
+    from app.main import app
+
     return TestClient(app)
 
 

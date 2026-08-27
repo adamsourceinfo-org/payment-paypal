@@ -66,19 +66,31 @@ def _pool_exhausted(request, exc):
         status_code=503)
 
 
-def _mount():
-    # ⚠️ webhooks 是**入站**（PayPal 打進來），push 是**出站**（我們打給 caller）。
-    # 兩支不同方向、不同認證，名字刻意分開。
+def mount_routers(target: FastAPI) -> None:
+    """把所有 router 掛到 target 上。
+
+    ⚠️ webhooks 是**入站**（PayPal 打進來），push 是**出站**（我們打給 caller）。
+    兩支不同方向、不同認證，名字刻意分開。
+
+    ⚠️ **demo 只在 sandbox 掛。** 判斷條件是 paypal_env 不是 app_env ——
+    真正決定「會不會動到真的錢」的是前者。prod 是 live，那組路由根本不會存在，
+    所以 /demo 回的是 404，不是一個「功能已停用」的頁面。
+    綁在 live/sandbox 這個字上，哪天多開一個環境也不會錯。
+    """
     from app.routers import (events, health, internal, orders, plans, push,
                              subscriptions, webhooks)
-    app.include_router(health.router)
-    app.include_router(orders.router)
-    app.include_router(plans.router)
-    app.include_router(subscriptions.router)
-    app.include_router(events.router)
-    app.include_router(webhooks.router)
-    app.include_router(push.router)
-    app.include_router(internal.router)
+    target.include_router(health.router)
+    target.include_router(orders.router)
+    target.include_router(plans.router)
+    target.include_router(subscriptions.router)
+    target.include_router(events.router)
+    target.include_router(webhooks.router)
+    target.include_router(push.router)
+    target.include_router(internal.router)
+
+    if get_settings().paypal_env == "sandbox":
+        from app.demo import routes as demo
+        target.include_router(demo.router)
 
 
-_mount()
+mount_routers(app)

@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+# ⚠️ app.main 不在模組頂端 import：它在模組層就會跑 mount_routers(app)，
+# 而那會呼叫 get_settings()。在測試模組頂端 import 的話，那一行發生在 autouse 的
+# fake_settings fixture 之前，會去讀真的環境變數然後死在「缺少必要環境變數」。
 from app.routers import push as router_mod
 from app.store import api_keys
 
@@ -62,6 +64,8 @@ def endpoints(monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch, endpoints):
+    from app.main import app
+
     monkeypatch.setattr(api_keys, "lookup", lambda h: {
         "id": "k1", "caller_id": "c1", "active": True, "scopes": SCOPES})
     monkeypatch.setattr(api_keys, "touch", lambda i: None)
@@ -130,6 +134,8 @@ def test_缺少scope回403(monkeypatch, endpoints):
     monkeypatch.setattr(api_keys, "lookup", lambda h: {
         "id": "k1", "caller_id": "c1", "active": True, "scopes": ["orders:read"]})
     monkeypatch.setattr(api_keys, "touch", lambda i: None)
+    from app.main import app
+
     c = TestClient(app)
     assert c.put("/v1/webhook-endpoint", json={"url": URL},
                  headers=H).status_code == 403
