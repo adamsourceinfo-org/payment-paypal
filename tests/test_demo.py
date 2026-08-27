@@ -352,3 +352,44 @@ def test_sink驗的是原始bytes(fake_settings):
     r = client.post("/demo/sink", content=original,
                     headers={"X-Signature": _signed(reserialized)})
     assert r.status_code == 401
+
+
+def test_state只回demo自己的資料(orders_env, fake_settings, monkeypatch):
+    """每張業務表都有 caller_id，隔離是查詢層的預設。
+    這條測試釘住「demo 不會看到別人的東西」。"""
+    from app.routers import orders as orders_router
+
+    seen = {}
+
+    def list_(caller_id, status=None, limit=50, offset=0, tx=None):
+        seen["orders"] = caller_id
+        return []
+    monkeypatch.setattr(orders_router.store, "list_", list_)
+    monkeypatch.setattr(flows, "_subscriptions", lambda: [])
+    monkeypatch.setattr(flows, "_events", lambda: [])
+    monkeypatch.setattr(flows, "_deliveries", lambda: [])
+
+    out = flows.state()
+    assert seen["orders"] == "demo"
+    assert set(out) >= {"orders", "subscriptions", "events", "deliveries",
+                        "push_configured"}
+
+
+def test_推送未設定時state不會爆掉(fake_settings, monkeypatch):
+    """/v1/deliveries 在推送未設定時回 503。畫面不該因此整個壞掉 ——
+    它還要能顯示訂單。"""
+    monkeypatch.setattr(fake_settings, "push_configured", False)
+    monkeypatch.setattr(flows, "_orders", lambda: [])
+    monkeypatch.setattr(flows, "_subscriptions", lambda: [])
+    monkeypatch.setattr(flows, "_events", lambda: [])
+
+    out = flows.state()
+    assert out["push_configured"] is False
+    assert out["deliveries"] == []
+
+
+def test_頁面吐得出完整HTML(fake_settings):
+    probe = _probe_app(fake_settings, "sandbox")
+    body = TestClient(probe).get("/demo").text
+    assert "單筆付款" in body and "訂閱付款" in body
+    assert "/demo/api/state" in body        # 頁面真的會去輪詢

@@ -1,5 +1,215 @@
 <!doctype html>
+<html lang="zh-Hant">
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>payment-paypal 模擬頁</title>
-<h1>payment-paypal 模擬頁</h1>
-<p>建置中。</p>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --line: #e3e6ea; --ink: #1a1d21;
+    --muted: #6b7280; --ok: #0f7b3d; --warn: #a15c00; --bad: #b3261e;
+    --accent: #0057d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171a; --card:#1c2024; --line:#2c3238; --ink:#e6e8ea;
+            --muted:#9aa3ad; --ok:#54c98a; --warn:#e0a33e; --bad:#f2857d;
+            --accent:#6aa6ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--ink);
+         font:15px/1.6 -apple-system,"Noto Sans TC",sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .cards { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:4px; }
+  input { width:100%; padding:8px 10px; border:1px solid var(--line);
+          border-radius:6px; background:var(--bg); color:var(--ink); font-size:15px; }
+  button { margin-top:10px; width:100%; padding:9px 12px; border:0; border-radius:6px;
+           background:var(--accent); color:#fff; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);
+          white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  .scroll { overflow-x:auto; }
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .banner { padding:10px 14px; border-radius:8px; margin-bottom:16px; font-size:14px;
+            border:1px solid var(--line); background:var(--card); }
+  section { margin-top:24px; }
+  section > h2 { font-size:15px; margin:0 0 8px; }
+  code { font-size:12px; }
+</style>
+<div class="wrap">
+  <h1>payment-paypal 模擬頁</h1>
+  <p class="sub">只在 sandbox 環境存在。這裡花的是假錢，但走的是真的 PayPal、真的佇列、真的簽章。</p>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <div class="cards">
+    <div class="card">
+      <h2>單筆付款</h2>
+      <label for="amount">金額（USD）</label>
+      <input id="amount" value="9.99" inputmode="decimal">
+      <button id="pay">建立訂單並前往 PayPal</button>
+      <p class="note">回來之後會自動 capture，錢才算真的收到。</p>
+    </div>
+
+    <div class="card">
+      <h2>訂閱付款</h2>
+      <p class="note" style="margin-top:0">方案：每月 USD 10.00。第一次會自動建立，之後重用同一個。</p>
+      <button id="sub">建立訂閱並前往 PayPal</button>
+      <p class="note">訂閱<strong>沒有 capture</strong> —— 它靠 webhook
+        <code>BILLING.SUBSCRIPTION.ACTIVATED</code> 轉成 ACTIVE，所以回來之後
+        要等一下才會看到狀態變化。</p>
+    </div>
+
+    <div class="card">
+      <h2>事件推送</h2>
+      <p class="note" style="margin-top:0" id="pushstate">讀取中…</p>
+      <button id="push" class="ghost">啟用推送（註冊端點）</button>
+      <p class="note">註冊之後，事件落地就會主動推到本服務的
+        <code>/demo/sink</code>，而 sink 會<strong>真的驗簽</strong>。</p>
+    </div>
+  </div>
+
+  <section>
+    <h2>投遞紀錄 —— 「那筆推出去了沒有」</h2>
+    <div class="card scroll"><table id="deliveries"><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>事件</h2>
+    <div class="card scroll"><table id="events"><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>訂單</h2>
+    <div class="card scroll"><table id="orders"><tbody></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>訂閱</h2>
+    <div class="card scroll"><table id="subscriptions"><tbody></tbody></table></div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+const RESULT_TEXT = {
+  paid: ["ok", "付款完成，已經 capture。"],
+  subscribed: ["ok", "訂閱已送出。狀態要等 PayPal 的 webhook 才會變 ACTIVE，稍等一下。"],
+  cancelled: ["warn", "你在 PayPal 取消了。"],
+  missing: ["bad", "找不到那筆單 —— 導回的網址對不上任何紀錄。"],
+  error: ["bad", "回來之後處理失敗，詳情看服務的 log。"],
+};
+
+function showBanner() {
+  const p = new URLSearchParams(location.search);
+  const r = p.get("result");
+  if (!r) return;
+  const [cls, text] = RESULT_TEXT[r] || ["warn", r];
+  const b = $("banner");
+  b.hidden = false;
+  b.innerHTML = `<span class="${cls}">●</span> ${esc(text)}` +
+    (p.get("ref") ? ` <span class="note">(${esc(p.get("ref"))})</span>` : "");
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {}),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(
+    typeof data.detail === "string" ? data.detail
+      : (data.detail && data.detail.message) || `HTTP ${r.status}`);
+  return data;
+}
+
+function go(btn, fn) {
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const out = await fn();
+      if (out && out.approve_url) { location.href = out.approve_url; return; }
+      await refresh();
+    } catch (e) {
+      const b = $("banner");
+      b.hidden = false;
+      b.innerHTML = `<span class="bad">●</span> ${esc(e.message)}`;
+    } finally { btn.disabled = false; }
+  });
+}
+
+go($("pay"), () => post("/demo/api/orders", {amount: $("amount").value}));
+go($("sub"), () => post("/demo/api/subscriptions"));
+go($("push"), () => post("/demo/api/push/enable"));
+
+function table(el, cols, rows, empty) {
+  const body = el.querySelector("tbody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td class="note">${empty}</td></tr>`;
+    return;
+  }
+  body.innerHTML =
+    `<tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr>` +
+    rows.map(r => `<tr>${cols.map(c => `<td>${c[1](r)}</td>`).join("")}</tr>`).join("");
+}
+
+const esc = (v) => String(v == null ? "—" : v)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+const statusClass = (s) =>
+  ({delivered: "ok", COMPLETED: "ok", ACTIVE: "ok",
+    failed: "warn", dead: "bad", DENIED: "bad"}[s] || "");
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("/demo/api/state")).json(); }
+  catch { return; }
+
+  $("pushstate").innerHTML = !s.push_configured
+    ? '<span class="bad">●</span> 服務端沒設定推送（缺 WEBHOOK_SIGNING_KEY / INTERNAL_KEY）'
+    : s.push_endpoint
+      ? `<span class="ok">●</span> 已註冊：<code>${esc(s.push_endpoint.url)}</code>`
+      : '<span class="warn">●</span> 尚未註冊端點';
+
+  table($("deliveries"), [
+    ["事件", d => esc(d.event_id === null ? "ping" : d.event_id)],
+    ["狀態", d => `<span class="${statusClass(d.status)}">${esc(d.status)}</span>`],
+    ["嘗試", d => esc(d.attempts)],
+    ["對方回", d => esc(d.last_status)],
+    ["送去哪", d => `<code>${esc(d.url)}</code>`],
+  ], s.deliveries, "還沒有任何投遞。啟用推送之後付一筆看看。");
+
+  table($("events"), [
+    ["id", e => esc(e.id)],
+    ["類型", e => esc(e.event_type)],
+    ["對象", e => esc(e.subject_kind)],
+    ["時間", e => esc(e.received_at)],
+  ], s.events, "還沒有事件。");
+
+  table($("orders"), [
+    ["reference", o => esc(o.reference_id)],
+    ["金額", o => `${esc(o.amount)} ${esc(o.currency)}`],
+    ["狀態", o => `<span class="${statusClass(o.status)}">${esc(o.status)}</span>`],
+  ], s.orders, "還沒有訂單。");
+
+  table($("subscriptions"), [
+    ["reference", x => esc(x.reference_id)],
+    ["狀態", x => `<span class="${statusClass(x.status)}">${esc(x.status)}</span>`],
+    ["PayPal id", x => esc(x.paypal_subscription_id)],
+  ], s.subscriptions, "還沒有訂閱。");
+}
+
+showBanner();
+refresh();
+setInterval(refresh, 3000);
+</script>
+</html>

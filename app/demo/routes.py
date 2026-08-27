@@ -93,3 +93,8 @@ async def sink(request: Request):
              request.headers.get("x-delivery-id"),
              request.headers.get("x-delivery-attempt"))
     return {"received": True}
+
+
+@router.get("/api/state")
+def api_state():
+    return flows.state()

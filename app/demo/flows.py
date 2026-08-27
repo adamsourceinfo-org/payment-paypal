@@ -27,12 +27,14 @@ from app.auth import Caller
 from app.config import get_settings
 from app.models import (OrderCreate, PlanCreate, SubscriptionCreate,
                         WebhookEndpointPut)
+from app.routers import events as events_router
 from app.routers import orders as orders_router
 from app.routers import plans as plans_router
 from app.routers import push as push_router
 from app.routers import subscriptions as subs_router
 from app.store import orders as orders_store
 from app.store import plans as plans_store
+from app.store import webhook_endpoints as endpoints_store
 from app.webhooks import signing
 
 log = logging.getLogger("demo")
@@ -186,3 +188,59 @@ def verify_push(raw: bytes, header) -> bool:
     except RuntimeError:
         return False        # 推送未設定，算不出密鑰
     return hmac.compare_digest(expected, parts.get("v1", ""))
+
+
+# 每一段各自包一層，讓 state() 的任何一塊壞掉都不會拖垮整個畫面 ——
+# /demo 壞掉的時候，正是最需要它回答問題的時候。
+
+def _orders():
+    return orders_router.list_orders(caller=DEMO_CALLER)["items"]
+
+
+def _subscriptions():
+    return subs_router.list_subscriptions(caller=DEMO_CALLER)["items"]
+
+
+def _events():
+    return events_router.list_events(after=0, limit=50, caller=DEMO_CALLER)["items"]
+
+
+def _deliveries():
+    if not get_settings().push_configured:
+        return []
+    return push_router.list_deliveries(caller=DEMO_CALLER)["items"]
+
+
+def _safe(fn, what):
+    try:
+        return fn()
+    except Exception as exc:                    # noqa: BLE001 — 畫面要活著
+        log.error("demo state 的 %s 讀不到：%s: %s",
+                  what, type(exc).__name__, exc)
+        return []
+
+
+def state() -> dict:
+    """給頁面輪詢的一包資料，全部從 DB 讀。
+
+    ⚠️ **不從 sink 的記憶體讀。** Cloud Run 有多個實例，推送打到哪一台不確定 ——
+    存記憶體在單實例的本機測試會過，上了 dev 之後變成「有時候看得到」，
+    是最難查的那一種。
+
+    `deliveries` 是這個畫面真正的價值：它說得出「那筆事件推出去了沒有、
+    試了幾次、對方回什麼」。
+    """
+    s = get_settings()
+    endpoint = None
+    if s.push_configured:
+        row = _safe(lambda: endpoints_store.get(DEMO_CALLER_ID), "endpoint")
+        endpoint = row if isinstance(row, dict) else None
+    return {
+        "orders": _safe(_orders, "orders"),
+        "subscriptions": _safe(_subscriptions, "subscriptions"),
+        "events": _safe(_events, "events"),
+        "deliveries": _safe(_deliveries, "deliveries"),
+        "push_configured": s.push_configured,
+        "push_endpoint": ({"url": endpoint["url"], "active": endpoint["active"]}
+                          if endpoint else None),
+    }
