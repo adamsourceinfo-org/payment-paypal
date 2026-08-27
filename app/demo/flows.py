@@ -193,12 +193,26 @@ def verify_push(raw: bytes, header) -> bool:
 # 每一段各自包一層，讓 state() 的任何一塊壞掉都不會拖垮整個畫面 ——
 # /demo 壞掉的時候，正是最需要它回答問題的時候。
 
+# ⚠️⚠️ **每一個參數都要明寫，不可以靠預設值。**
+#
+# 這幾支 router 函式的參數帶的是 FastAPI 的 `Query(default=...)`，而那個預設值
+# 只有**透過框架呼叫**時才會被解析成真正的值。直接呼叫的話，那個 Query 物件
+# 會原樣往下傳，最後變成 SQL 的參數：
+#
+#   invalid input syntax for type bigint: "annotation=int required=False
+#   default=50 alias='limit' ..."
+#
+# 而 _safe() 會把它吞掉回 []，所以症狀是「畫面永遠是空的，但 HTTP 200」——
+# 實跑 dev 才發現的。tests/test_demo.py 有一條迴歸測試釘住它。
+
 def _orders():
-    return orders_router.list_orders(caller=DEMO_CALLER)["items"]
+    return orders_router.list_orders(
+        status=None, limit=50, offset=0, caller=DEMO_CALLER)["items"]
 
 
 def _subscriptions():
-    return subs_router.list_subscriptions(caller=DEMO_CALLER)["items"]
+    return subs_router.list_subscriptions(
+        status=None, limit=50, offset=0, caller=DEMO_CALLER)["items"]
 
 
 def _events():
@@ -208,7 +222,8 @@ def _events():
 def _deliveries():
     if not get_settings().push_configured:
         return []
-    return push_router.list_deliveries(caller=DEMO_CALLER)["items"]
+    return push_router.list_deliveries(
+        event_id=None, status=None, limit=100, caller=DEMO_CALLER)["items"]
 
 
 def _safe(fn, what):

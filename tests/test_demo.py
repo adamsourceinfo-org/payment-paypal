@@ -105,6 +105,16 @@ def orders_env(monkeypatch):
         row["status"] = status
         return dict(row)
 
+    def list_(caller_id, status=None, limit=50, offset=0, tx=None):
+        # ⚠️ 這裡刻意**照著真的 store 簽名**收 limit/offset。
+        # 直接呼叫 router 函式時，帶 Query(default=...) 的參數不會被解析，
+        # 那個 Query 物件會原樣傳到這裡 —— 假的 store 如果用 **kwargs 吞掉，
+        # 就永遠測不出那個 bug。
+        assert isinstance(limit, int), f"limit 不是 int 是 {limit!r}"
+        assert offset is None or isinstance(offset, int)
+        return [dict(r) for r in rows.values() if r["caller_id"] == caller_id]
+
+    monkeypatch.setattr(orders_router.store, "list_", list_)
     monkeypatch.setattr(orders_router.store, "create", create)
     monkeypatch.setattr(orders_router.store, "get_by_reference", get_by_reference)
     monkeypatch.setattr(orders_router.store, "attach_paypal_id", attach)
@@ -428,3 +438,40 @@ def test_沒註冊端點就不能ping(fake_settings, monkeypatch):
     with pytest.raises(HTTPException) as e:
         flows.send_ping("https://demo.example")
     assert e.value.status_code == 400
+
+
+def test_state真的讀得到資料_不是被_safe吞掉(orders_env, fake_settings, monkeypatch):
+    """⚠️ 這條是迴歸測試，抓的是一個實跑 dev 才發現的 bug。
+
+    直接呼叫 router 函式時，帶 `Query(default=...)` 的參數**不會**被解析成
+    預設值 —— 那個 Query 物件會原樣傳下去，最後變成 SQL 的參數，
+    症狀是 `invalid input syntax for type bigint: "annotation=int ..."`。
+
+    而 state() 的 _safe() 會把它吞掉並回 []，所以畫面**看起來只是空的**，
+    HTTP 還是 200。前一版的測試因為直接 monkeypatch 掉 _orders/_deliveries，
+    完全沒有執行到真正的那條路。
+
+    所以這條只在 store 那一層放假的，中間的 router 函式一律**真的跑過**。
+    """
+    from app.routers import push as push_router
+
+    monkeypatch.setattr(
+        push_router.deliveries_store, "list_for_caller",
+        lambda caller_id, event_id=None, status=None, limit=100, tx=None: [{
+            "id": "d-1", "event_id": None, "endpoint_id": "ep-1",
+            "caller_id": caller_id, "url": "https://x.example/sink",
+            "status": "delivered", "attempts": 1, "last_status": 200,
+            "last_error": None, "created_at": "2026-08-27T00:00:00Z",
+            "updated_at": "2026-08-27T00:00:00Z",
+            "delivered_at": "2026-08-27T00:00:00Z"}])
+    monkeypatch.setattr(flows, "_subscriptions", lambda: [])
+    monkeypatch.setattr(flows, "_events", lambda: [])
+    monkeypatch.setattr(flows.endpoints_store, "get", lambda cid, tx=None: None)
+
+    flows.start_order("10.00", "https://demo.example")
+    out = flows.state()
+
+    assert len(out["orders"]) == 1, "訂單被 _safe 吞掉了"
+    assert out["orders"][0]["amount"] == "10.00"
+    assert len(out["deliveries"]) == 1, "投遞紀錄被 _safe 吞掉了"
+    assert out["deliveries"][0]["status"] == "delivered"
