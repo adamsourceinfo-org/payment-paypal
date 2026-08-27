@@ -45,3 +45,123 @@ def test_demo身分固定是demo(fake_settings):
 
     assert DEMO_CALLER_ID == "demo"
     assert DEMO_CALLER.caller_id == "demo"
+
+
+import pytest
+
+from app.demo import flows
+
+
+class FakePayPalOrders:
+    """記下送給 PayPal 的東西，並回一個像樣的訂單。"""
+
+    def __init__(self):
+        self.created = []
+        self.captured = []
+
+    def create_order(self, **kw):
+        self.created.append(kw)
+        return {"id": "PP-ORDER-1", "status": "CREATED",
+                "links": [{"rel": "approve",
+                           "href": "https://sandbox.paypal.com/checkoutnow?token=PP-ORDER-1"}]}
+
+    def capture_order(self, pp_id):
+        self.captured.append(pp_id)
+        return {"id": pp_id, "status": "COMPLETED"}
+
+
+@pytest.fixture
+def orders_env(monkeypatch):
+    """把 orders router 用到的 store 與 PayPal 全部換掉。"""
+    from app.routers import orders as orders_router
+
+    pp = FakePayPalOrders()
+    rows = {}
+
+    def create(caller_id, reference_id, amount, currency, status, tx=None):
+        row = {"id": f"local-{len(rows) + 1}", "caller_id": caller_id,
+               "reference_id": reference_id, "amount": amount,
+               "currency": currency, "status": status,
+               "paypal_order_id": None, "created_at": "2026-08-27T00:00:00Z",
+               "captured_at": None}
+        rows[reference_id] = row
+        return dict(row)
+
+    def get_by_reference(caller_id, reference_id, tx=None):
+        row = rows.get(reference_id)
+        return dict(row) if row and row["caller_id"] == caller_id else None
+
+    def attach(order_id, pp_id, status, tx=None):
+        row = next(r for r in rows.values() if r["id"] == order_id)
+        row.update(paypal_order_id=pp_id, status=status)
+        return dict(row)
+
+    def get(caller_id, order_id, tx=None):
+        row = next((r for r in rows.values() if r["id"] == order_id), None)
+        return dict(row) if row and row["caller_id"] == caller_id else None
+
+    def set_status(order_id, status, captured=False, tx=None):
+        row = next(r for r in rows.values() if r["id"] == order_id)
+        row["status"] = status
+        return dict(row)
+
+    monkeypatch.setattr(orders_router.store, "create", create)
+    monkeypatch.setattr(orders_router.store, "get_by_reference", get_by_reference)
+    monkeypatch.setattr(orders_router.store, "attach_paypal_id", attach)
+    monkeypatch.setattr(orders_router.store, "get", get)
+    monkeypatch.setattr(orders_router.store, "set_status", set_status)
+    monkeypatch.setattr(orders_router.pp, "create_order", pp.create_order)
+    monkeypatch.setattr(orders_router.pp, "capture_order", pp.capture_order)
+    return pp
+
+
+def test_建單帶著我們自己的導回網址(orders_env, fake_settings):
+    out = flows.start_order("12.34", "https://demo.example")
+    ref = out["reference_id"]
+    ctx = orders_env.created[0]
+    assert ctx["return_url"] == f"https://demo.example/demo/return/order/{ref}"
+    assert ctx["cancel_url"] == f"https://demo.example/demo/cancel/order/{ref}"
+    assert out["approve_url"].startswith("https://sandbox.paypal.com/")
+
+
+def test_建單走的是v1的金額驗證(orders_env, fake_settings):
+    """金額錯誤要回 400 帶欄位名 —— 那是 /v1 那份邏輯給的，
+    demo 沒有自己再寫一份。"""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as e:
+        flows.start_order("12.345", "https://demo.example")
+    assert e.value.status_code == 400
+    assert e.value.detail["field"] == "amount"
+
+
+def test_導回時會capture(orders_env, fake_settings):
+    out = flows.start_order("10.00", "https://demo.example")
+    assert flows.finish_order(out["reference_id"]) == "paid"
+    assert orders_env.captured == ["PP-ORDER-1"]
+
+
+def test_導回時找不到那筆單就說missing(orders_env, fake_settings):
+    assert flows.finish_order("demo-不存在") == "missing"
+
+
+def test_導回端點回302導向demo頁(orders_env, fake_settings):
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    out = flows.start_order("10.00", "https://demo.example")
+    r = client.get(f"/demo/return/order/{out['reference_id']}",
+                   follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/demo?")
+    assert "result=paid" in r.headers["location"]
+
+
+def test_取消端點不會capture(orders_env, fake_settings):
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    out = flows.start_order("10.00", "https://demo.example")
+    r = client.get(f"/demo/cancel/order/{out['reference_id']}",
+                   follow_redirects=False)
+    assert r.status_code == 303
+    assert "result=cancelled" in r.headers["location"]
+    assert orders_env.captured == []

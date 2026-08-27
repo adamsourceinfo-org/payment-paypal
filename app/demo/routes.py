@@ -7,8 +7,12 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, Field
+
+from app.demo import flows
+from app.urls import base_url
 
 log = logging.getLogger("demo")
 
@@ -23,3 +27,25 @@ def page() -> HTMLResponse:
     為了一組 dev 用的頁面拉進樣板引擎不划算。動態部分由瀏覽器打
     /demo/api/* 拿 JSON。"""
     return HTMLResponse(_PAGE.read_text(encoding="utf-8"))
+
+
+class _AmountIn(BaseModel):
+    amount: str = Field(default="9.99")
+
+
+@router.post("/api/orders")
+def api_create_order(body: _AmountIn, request: Request):
+    return flows.start_order(body.amount, base_url(request))
+
+
+@router.get("/return/order/{reference_id}")
+def order_return(reference_id: str):
+    """PayPal 把**使用者的瀏覽器**導回這裡。導回一律回 303 到 /demo，
+    讓網址列乾淨、重新整理也不會再 capture 一次。"""
+    result = flows.finish_order(reference_id)
+    return RedirectResponse(f"/demo?ref={reference_id}&result={result}", 303)
+
+
+@router.get("/cancel/order/{reference_id}")
+def order_cancel(reference_id: str):
+    return RedirectResponse(f"/demo?ref={reference_id}&result=cancelled", 303)
