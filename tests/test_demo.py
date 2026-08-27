@@ -266,3 +266,89 @@ def test_訂閱導回不做capture只導向(subs_env, fake_settings):
                    follow_redirects=False)
     assert r.status_code == 303
     assert "result=subscribed" in r.headers["location"]
+
+
+import time
+
+from app.webhooks import signing
+
+
+@pytest.fixture
+def push_env(monkeypatch, fake_settings):
+    """推送端點的 store 換掉，讓 PUT /v1/webhook-endpoint 不碰 DB。"""
+    from app.routers import push as push_router
+
+    saved = {}
+
+    def upsert(caller_id, url, tx=None):
+        saved.update(id="ep-1", caller_id=caller_id, url=url, active=True,
+                     updated_at="2026-08-27T00:00:00Z")
+        return dict(saved)
+
+    monkeypatch.setattr(push_router.endpoints_store, "upsert", upsert)
+    monkeypatch.setattr(push_router.endpoints_store, "get",
+                        lambda cid, tx=None: dict(saved) or None)
+    return saved
+
+
+def _signed(raw: bytes, *, t=None, secret=None):
+    t = int(time.time()) if t is None else t
+    secret = secret or signing.secret_for("demo")
+    return signing.header(secret, t, raw)
+
+
+def test_啟用推送會把端點指回自己的sink(push_env, fake_settings):
+    out = flows.enable_push("https://demo.example")
+    assert out["url"] == "https://demo.example/demo/sink"
+    assert push_env["caller_id"] == "demo"
+
+
+def test_sink收下正確簽章(fake_settings):
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    raw = b'{"id":1,"event_type":"PAYMENT.CAPTURE.COMPLETED"}'
+    r = client.post("/demo/sink", content=raw,
+                    headers={"X-Signature": _signed(raw),
+                             "Content-Type": "application/json"})
+    assert r.status_code == 200
+
+
+def test_sink擋掉錯的簽章(fake_settings):
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    raw = b'{"id":1,"event_type":"X"}'
+    bad = f"t={int(time.time())},v1={'0' * 64}"
+    r = client.post("/demo/sink", content=raw, headers={"X-Signature": bad})
+    assert r.status_code == 401
+
+
+def test_sink擋掉沒有簽章的(fake_settings):
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    assert client.post("/demo/sink", content=b"{}").status_code == 401
+
+
+def test_sink擋掉過期的時間戳(fake_settings):
+    """防重放。容忍度是 signing.TOLERANCE_SECONDS。"""
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    raw = b'{"id":1,"event_type":"X"}'
+    old = int(time.time()) - signing.TOLERANCE_SECONDS - 60
+    r = client.post("/demo/sink", content=raw,
+                    headers={"X-Signature": _signed(raw, t=old)})
+    assert r.status_code == 401
+
+
+def test_sink驗的是原始bytes(fake_settings):
+    """⚠️ 重新序列化的 JSON 跟原文不保證逐位元組相同 ——
+    而且只在有非 ASCII 的 payload 上才發作。"""
+    import json
+
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    original = '{"msg":"付款成功"}'.encode()
+    reserialized = json.dumps(json.loads(original)).encode()
+    assert original != reserialized
+    r = client.post("/demo/sink", content=original,
+                    headers={"X-Signature": _signed(reserialized)})
+    assert r.status_code == 401

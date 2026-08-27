@@ -16,18 +16,24 @@
 不在函式本體）。還是把完整的 scope 列出來，因為這個物件代表的是
 「一個有這些權限的 caller」—— 寫成空集合會讓讀的人以為 scope 不重要。
 """
+import hmac
 import logging
+import time
 import uuid
 
 from fastapi import HTTPException
 
 from app.auth import Caller
-from app.models import OrderCreate, PlanCreate, SubscriptionCreate
+from app.config import get_settings
+from app.models import (OrderCreate, PlanCreate, SubscriptionCreate,
+                        WebhookEndpointPut)
 from app.routers import orders as orders_router
 from app.routers import plans as plans_router
+from app.routers import push as push_router
 from app.routers import subscriptions as subs_router
 from app.store import orders as orders_store
 from app.store import plans as plans_store
+from app.webhooks import signing
 
 log = logging.getLogger("demo")
 
@@ -141,3 +147,42 @@ def start_subscription(base_url: str) -> dict:
     out = subs_router.create_subscription(body, caller=DEMO_CALLER)
     return {"reference_id": ref, "approve_url": out.get("approve_url"),
             "subscription": out}
+
+
+def enable_push(base_url: str) -> dict:
+    """把 caller `demo` 的推送端點指向服務自己的 /demo/sink。
+
+    ⚠️ 這是刻意做成畫面上**可見的一步**，因為那正是 caller 要做的事
+    （`PUT /v1/webhook-endpoint`）。藏起來自動做掉的話，這個 demo 就少演了
+    最重要的一段。
+
+    ⚠️ 本機跑（http://localhost）會被 targets.validate() 擋下來回 400 ——
+    推送端點只收 https。那是對的行為，不要為了 demo 放寬它。
+    """
+    return push_router.put_endpoint(
+        WebhookEndpointPut(url=f"{base_url}/demo/sink"), caller=DEMO_CALLER)
+
+
+def verify_push(raw: bytes, header) -> bool:
+    """照 README 給 caller 的規則驗簽。**這裡是一份可執行的示範。**
+
+    ⚠️ 驗的是 raw bytes，不是重新序列化的 JSON。重新 json.dumps 出來的字串
+    跟原文不保證逐位元組相同（鍵的順序、Unicode 跳脫、空白都可能不同），
+    而且只在有非 ASCII 的 payload 上才發作。
+    """
+    parts = {}
+    for kv in (header or "").split(","):
+        i = kv.find("=")
+        if i > 0:
+            parts[kv[:i].strip()] = kv[i + 1:]
+    try:
+        t = int(parts.get("t", ""))
+    except ValueError:
+        return False
+    if abs(time.time() - t) > signing.TOLERANCE_SECONDS:
+        return False        # 防重放
+    try:
+        expected = signing.signature(signing.secret_for(DEMO_CALLER_ID), t, raw)
+    except RuntimeError:
+        return False        # 推送未設定，算不出密鑰
+    return hmac.compare_digest(expected, parts.get("v1", ""))
