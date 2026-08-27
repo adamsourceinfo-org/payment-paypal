@@ -71,8 +71,11 @@
       <h2>事件推送</h2>
       <p class="note" style="margin-top:0" id="pushstate">讀取中…</p>
       <button id="push" class="ghost">啟用推送（註冊端點）</button>
+      <button id="ping" class="ghost">送一筆測試推送（ping）</button>
       <p class="note">註冊之後，事件落地就會主動推到本服務的
-        <code>/demo/sink</code>，而 sink 會<strong>真的驗簽</strong>。</p>
+        <code>/demo/sink</code>，而 sink 會<strong>真的驗簽</strong>。
+        ping 走的是<strong>一樣的佇列</strong>，所以不用真的付一筆錢
+        也能驗完整條路。</p>
     </div>
   </div>
 
@@ -150,6 +153,7 @@ function go(btn, fn) {
 go($("pay"), () => post("/demo/api/orders", {amount: $("amount").value}));
 go($("sub"), () => post("/demo/api/subscriptions"));
 go($("push"), () => post("/demo/api/push/enable"));
+go($("ping"), () => post("/demo/api/push/ping"));
 
 function table(el, cols, rows, empty) {
   const body = el.querySelector("tbody");

@@ -35,7 +35,7 @@ from app.routers import subscriptions as subs_router
 from app.store import orders as orders_store
 from app.store import plans as plans_store
 from app.store import webhook_endpoints as endpoints_store
-from app.webhooks import signing
+from app.webhooks import dispatch, signing
 
 log = logging.getLogger("demo")
 
@@ -244,3 +244,21 @@ def state() -> dict:
         "push_endpoint": ({"url": endpoint["url"], "active": endpoint["active"]}
                           if endpoint else None),
     }
+
+
+def send_ping(base_url: str) -> dict:
+    """送一筆合成的 `ping`，走**真的**佇列與內部端點。
+
+    ⚠️ 這顆按鈕存在的意義是「**不用真的付一筆錢**也能驗完整條路」——
+    同步直送會跳過 Cloud Tasks、內部端點、X-Internal-Key、重試，
+    而那四樣正好是最會壞的部分。所以它走 dispatch.send_test_ping，
+    跟 `POST /v1/webhook-endpoint/test` 是同一條路。
+
+    events 表**不會多出任何一列**（ping 的 deliveries.event_id 是 NULL）。
+    """
+    if not get_settings().push_configured:
+        raise HTTPException(status_code=503, detail="推送尚未設定")
+    row = dispatch.send_test_ping(DEMO_CALLER_ID, base_url)
+    if not row:
+        raise HTTPException(status_code=400, detail="尚未註冊推送端點，或端點已停用")
+    return {"delivery_id": str(row["id"]), "status": row["status"]}

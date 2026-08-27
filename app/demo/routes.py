@@ -98,3 +98,8 @@ async def sink(request: Request):
 @router.get("/api/state")
 def api_state():
     return flows.state()
+
+
+@router.post("/api/push/ping")
+def api_ping(request: Request):
+    return flows.send_ping(base_url(request))

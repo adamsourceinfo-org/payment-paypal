@@ -393,3 +393,38 @@ def test_頁面吐得出完整HTML(fake_settings):
     body = TestClient(probe).get("/demo").text
     assert "單筆付款" in body and "訂閱付款" in body
     assert "/demo/api/state" in body        # 頁面真的會去輪詢
+
+
+def test_ping走真的佇列(push_env, fake_settings, monkeypatch):
+    """⚠️ 同步直送會跳過 Cloud Tasks、內部端點、X-Internal-Key、重試 ——
+    而那四樣正好是最會壞的部分。這顆按鈕存在的意義就是「不用真的付一筆錢
+    也能驗完整條路」，跳過那些就沒有意義了。"""
+    from app.webhooks import dispatch
+
+    enqueued = []
+    monkeypatch.setattr(dispatch.endpoints_store, "get_active",
+                        lambda cid, tx=None: {"id": "ep-1",
+                                              "url": "https://x.example/sink"})
+    monkeypatch.setattr(dispatch.deliveries_store, "create",
+                        lambda *a, **k: {"id": "d-1", "caller_id": "demo"})
+    monkeypatch.setattr(dispatch.deliveries_store, "get",
+                        lambda did, tx=None: {"id": did, "status": "pending"})
+    monkeypatch.setattr(dispatch.tasks, "enqueue_delivery",
+                        lambda cid, url: enqueued.append((cid, url)))
+
+    out = flows.send_ping("https://demo.example")
+    assert out["delivery_id"] == "d-1"
+    assert enqueued and enqueued[0][0] == "demo"
+    assert "/internal/deliveries/d-1" in enqueued[0][1]
+
+
+def test_沒註冊端點就不能ping(fake_settings, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.webhooks import dispatch
+
+    monkeypatch.setattr(dispatch.endpoints_store, "get_active",
+                        lambda cid, tx=None: None)
+    with pytest.raises(HTTPException) as e:
+        flows.send_ping("https://demo.example")
+    assert e.value.status_code == 400
