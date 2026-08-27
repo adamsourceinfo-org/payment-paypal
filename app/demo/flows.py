@@ -22,9 +22,12 @@ import uuid
 from fastapi import HTTPException
 
 from app.auth import Caller
-from app.models import OrderCreate
+from app.models import OrderCreate, PlanCreate, SubscriptionCreate
 from app.routers import orders as orders_router
+from app.routers import plans as plans_router
+from app.routers import subscriptions as subs_router
 from app.store import orders as orders_store
+from app.store import plans as plans_store
 
 log = logging.getLogger("demo")
 
@@ -97,3 +100,44 @@ def finish_order(reference_id: str) -> str:
                   reference_id, type(exc).__name__, exc)
         return "error"
     return "paid"
+
+
+DEMO_PLAN_NAME = "payment-paypal demo 月訂閱"
+DEMO_PLAN_AMOUNT = "10.00"
+
+
+def ensure_plan() -> dict:
+    """回 demo 用的方案，沒有就建一個。
+
+    ⚠️ 一定要重用。建方案在 PayPal 那邊是 product + plan 兩個永久物件，
+    每按一次訂閱就多一組的話，後台很快就被塞滿而且分不出哪個在用。
+    用名字比對就夠了 —— 這是 demo，不需要一個 `is_demo` 欄位。
+    """
+    for row in plans_store.list_(DEMO_CALLER_ID, limit=200):
+        if row["name"] == DEMO_PLAN_NAME and row["status"] == "ACTIVE":
+            return {**row, "id": str(row["id"])}
+    return plans_router.create_plan(
+        PlanCreate(name=DEMO_PLAN_NAME, amount=DEMO_PLAN_AMOUNT,
+                   currency=DEMO_CURRENCY, interval_count=1,
+                   description="payment-paypal 模擬頁用的月訂閱方案"),
+        caller=DEMO_CALLER)
+
+
+def start_subscription(base_url: str) -> dict:
+    """建一筆訂閱，回 approve_url。
+
+    ⚠️ 訂閱**沒有 capture**。使用者在 PayPal 按下訂閱之後，本地狀態要等
+    webhook `BILLING.SUBSCRIPTION.ACTIVATED` 才會變成 ACTIVE ——
+    所以導回頁只能說「已送出」，真正的確認由推送那條路帶回來。
+    """
+    plan = ensure_plan()
+    ref = _reference()
+    body = SubscriptionCreate(
+        reference_id=ref,
+        plan_id=str(plan["id"]),
+        return_url=f"{base_url}/demo/return/subscription/{ref}",
+        cancel_url=f"{base_url}/demo/cancel/subscription/{ref}",
+    )
+    out = subs_router.create_subscription(body, caller=DEMO_CALLER)
+    return {"reference_id": ref, "approve_url": out.get("approve_url"),
+            "subscription": out}

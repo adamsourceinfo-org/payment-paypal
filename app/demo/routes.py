@@ -49,3 +49,20 @@ def order_return(reference_id: str):
 @router.get("/cancel/order/{reference_id}")
 def order_cancel(reference_id: str):
     return RedirectResponse(f"/demo?ref={reference_id}&result=cancelled", 303)
+
+
+@router.post("/api/subscriptions")
+def api_create_subscription(request: Request):
+    return flows.start_subscription(base_url(request))
+
+
+@router.get("/return/subscription/{reference_id}")
+def subscription_return(reference_id: str):
+    """⚠️ 這裡**不做任何事**，只導回。訂閱轉 ACTIVE 是 webhook 的工作 ——
+    在這裡搶著去 PayPal 問一次只會在導回路徑上多一次外部呼叫，而導回要快。"""
+    return RedirectResponse(f"/demo?ref={reference_id}&result=subscribed", 303)
+
+
+@router.get("/cancel/subscription/{reference_id}")
+def subscription_cancel(reference_id: str):
+    return RedirectResponse(f"/demo?ref={reference_id}&result=cancelled", 303)

@@ -165,3 +165,104 @@ def test_取消端點不會capture(orders_env, fake_settings):
     assert r.status_code == 303
     assert "result=cancelled" in r.headers["location"]
     assert orders_env.captured == []
+
+
+@pytest.fixture
+def subs_env(monkeypatch):
+    """方案 + 訂閱兩條 store，加上假的 PayPal。"""
+    from app.routers import plans as plans_router
+    from app.routers import subscriptions as subs_router
+
+    plans, subs = {}, {}
+    calls = {"products": 0, "plans": 0, "subs": []}
+
+    def create_product(name, description=None):
+        calls["products"] += 1
+        return {"id": f"PROD-{calls['products']}"}
+
+    def create_plan(product_id, name, amount, currency, interval_count,
+                    description=None):
+        calls["plans"] += 1
+        return {"id": f"PLAN-{calls['plans']}"}
+
+    def plan_store_create(caller_id, prod, pp_plan, name, amount, currency,
+                          interval_count, tx=None):
+        row = {"id": f"plan-{len(plans) + 1}", "caller_id": caller_id,
+               "paypal_product_id": prod, "paypal_plan_id": pp_plan,
+               "name": name, "amount": amount, "currency": currency,
+               "interval_unit": "MONTH", "interval_count": interval_count,
+               "status": "ACTIVE", "created_at": "2026-08-27T00:00:00Z"}
+        plans[row["id"]] = row
+        return dict(row)
+
+    def plan_list(caller_id, limit=50, offset=0, tx=None):
+        return [dict(p) for p in plans.values() if p["caller_id"] == caller_id]
+
+    def plan_get(caller_id, plan_id, tx=None):
+        p = plans.get(str(plan_id))
+        return dict(p) if p and p["caller_id"] == caller_id else None
+
+    monkeypatch.setattr(plans_router.pp, "create_product", create_product)
+    monkeypatch.setattr(plans_router.pp, "create_plan", create_plan)
+    monkeypatch.setattr(plans_router.store, "create", plan_store_create)
+    monkeypatch.setattr(plans_router.store, "list_", plan_list)
+    monkeypatch.setattr(subs_router.plans_store, "get", plan_get)
+
+    def sub_create(caller_id, plan_id, reference_id, status, tx=None):
+        row = {"id": f"sub-{len(subs) + 1}", "caller_id": caller_id,
+               "plan_id": plan_id, "reference_id": reference_id,
+               "status": status, "paypal_subscription_id": None,
+               "current_period_end": None,
+               "created_at": "2026-08-27T00:00:00Z"}
+        subs[reference_id] = row
+        return dict(row)
+
+    def sub_by_ref(caller_id, reference_id, tx=None):
+        row = subs.get(reference_id)
+        return dict(row) if row and row["caller_id"] == caller_id else None
+
+    def sub_attach(sub_id, pp_id, status, tx=None):
+        row = next(r for r in subs.values() if r["id"] == sub_id)
+        row.update(paypal_subscription_id=pp_id, status=status)
+        return dict(row)
+
+    def pp_create_sub(**kw):
+        calls["subs"].append(kw)
+        return {"id": "PP-SUB-1", "status": "APPROVAL_PENDING",
+                "links": [{"rel": "approve",
+                           "href": "https://sandbox.paypal.com/subscribe?ba=PP-SUB-1"}]}
+
+    monkeypatch.setattr(subs_router.store, "create", sub_create)
+    monkeypatch.setattr(subs_router.store, "get_by_reference", sub_by_ref)
+    monkeypatch.setattr(subs_router.store, "attach_paypal_id", sub_attach)
+    monkeypatch.setattr(subs_router.pp, "create_subscription", pp_create_sub)
+    return calls
+
+
+def test_第一次會建方案第二次重用(subs_env, fake_settings):
+    """每按一次訂閱就多一個方案的話，PayPal 後台會被塞滿。"""
+    first = flows.ensure_plan()
+    second = flows.ensure_plan()
+    assert first["id"] == second["id"]
+    assert subs_env["plans"] == 1
+
+
+def test_建訂閱帶著我們自己的導回網址(subs_env, fake_settings):
+    out = flows.start_subscription("https://demo.example")
+    ref = out["reference_id"]
+    ctx = subs_env["subs"][0]
+    assert ctx["return_url"] == f"https://demo.example/demo/return/subscription/{ref}"
+    assert ctx["cancel_url"] == f"https://demo.example/demo/cancel/subscription/{ref}"
+    assert out["approve_url"].startswith("https://sandbox.paypal.com/")
+
+
+def test_訂閱導回不做capture只導向(subs_env, fake_settings):
+    """訂閱沒有 capture 這一步 —— 它靠 webhook BILLING.SUBSCRIPTION.ACTIVATED
+    轉成 ACTIVE。導回頁只能說「已送出，等 PayPal 通知」。"""
+    probe = _probe_app(fake_settings, "sandbox")
+    client = TestClient(probe, raise_server_exceptions=False)
+    out = flows.start_subscription("https://demo.example")
+    r = client.get(f"/demo/return/subscription/{out['reference_id']}",
+                   follow_redirects=False)
+    assert r.status_code == 303
+    assert "result=subscribed" in r.headers["location"]
