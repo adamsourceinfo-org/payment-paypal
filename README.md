@@ -25,6 +25,17 @@
 | 投遞紀錄 | `GET /v1/deliveries?event_id=&status=&limit=`、`POST /v1/events/{id}/redeliver` | `webhooks:read` / `webhooks:write` |
 | Webhook | `POST /v1/webhooks` | PayPal 打進來的**入站**接收器，驗 PayPal 簽章，不驗 API key |
 
+### 方案可以帶免費試用
+
+`POST /v1/plans` 多一個選填的 `trial_weeks`（0–52，預設 0）：給 N 就是先免費 N 週、
+之後才開始每月扣款，PayPal 那邊會在 REGULAR 週期前面多放一個 `WEEK` 單位的 `TRIAL`
+週期。回應與 `GET /v1/plans[/{id}]` 都帶 `trial_weeks`，省略就是 0、行為跟以前一模一樣。
+
+⚠️ **PayPal 的方案建了就不能改。** 要開試用、關試用、改週數，都是建一個新方案、
+新訂閱導去新的，舊方案 `deactivate` 停售。另外試用期間 `BILLING.SUBSCRIPTION.ACTIVATED`
+照樣會來，但 `PAYMENT.SALE.COMPLETED` 要等試用結束第一次真的扣款才有 ——
+別把「訂閱啟用了」當成「收到錢了」（見下一節）。
+
 ## caller 怎麼知道訂閱扣款成功
 
 事件有**兩條出口**：拉取與推送。每月扣款是 PayPal 主動發生的，本服務收到

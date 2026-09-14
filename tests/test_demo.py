@@ -191,16 +191,17 @@ def subs_env(monkeypatch):
         return {"id": f"PROD-{calls['products']}"}
 
     def create_plan(product_id, name, amount, currency, interval_count,
-                    description=None):
+                    description=None, trial_weeks=0):
         calls["plans"] += 1
         return {"id": f"PLAN-{calls['plans']}"}
 
     def plan_store_create(caller_id, prod, pp_plan, name, amount, currency,
-                          interval_count, tx=None):
+                          interval_count, trial_weeks, tx=None):
         row = {"id": f"plan-{len(plans) + 1}", "caller_id": caller_id,
                "paypal_product_id": prod, "paypal_plan_id": pp_plan,
                "name": name, "amount": amount, "currency": currency,
                "interval_unit": "MONTH", "interval_count": interval_count,
+               "trial_weeks": trial_weeks,
                "status": "ACTIVE", "created_at": "2026-08-27T00:00:00Z"}
         plans[row["id"]] = row
         return dict(row)

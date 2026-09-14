@@ -26,6 +26,10 @@ class PlanCreate(BaseModel):
     currency: str
     interval_count: int = Field(default=1, ge=1, le=12,
                                 description="每幾個月收一次")
+    trial_weeks: int = Field(
+        default=0, ge=0, le=52,
+        description="免費試用幾週；0 = 沒有試用，第一期就扣款。"
+                    "PayPal 的方案建了就不能改，要開關試用只能另建一個方案")
     description: Optional[str] = Field(default=None, max_length=256)
 
 
