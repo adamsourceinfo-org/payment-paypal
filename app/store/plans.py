@@ -2,13 +2,14 @@ from app import db
 
 
 def create(caller_id, paypal_product_id, paypal_plan_id, name, amount,
-           currency, interval_count):
+           currency, interval_count, trial_weeks):
     return db.query(
         "INSERT INTO plans (caller_id, paypal_product_id, paypal_plan_id, name,"
-        " amount, currency, interval_count) VALUES (%s,%s,%s,%s,%s,%s,%s)"
+        " amount, currency, interval_count, trial_weeks)"
+        " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"
         " RETURNING *",
         (caller_id, paypal_product_id, paypal_plan_id, name, amount,
-         currency, interval_count), fetch="one")
+         currency, interval_count, trial_weeks), fetch="one")
 
 
 def get(caller_id, plan_id):

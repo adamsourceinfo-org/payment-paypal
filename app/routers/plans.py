@@ -16,6 +16,8 @@ def _out(row: dict) -> dict:
             "amount": format_amount(row["amount"], row["currency"]), "currency": row["currency"],
             "interval_unit": row["interval_unit"],
             "interval_count": row["interval_count"],
+            # 003 之前建的列靠 DB 預設值補 0；這裡再 get 一次是讓 _out 不依賴那件事
+            "trial_weeks": row.get("trial_weeks", 0),
             "status": row["status"],
             "paypal_plan_id": row["paypal_plan_id"],
             "created_at": row["created_at"]}
@@ -36,12 +38,16 @@ def create_plan(body: PlanCreate,
         plan = pp.create_plan(product_id=product["id"], name=body.name,
                               amount=amount, currency=currency,
                               interval_count=body.interval_count,
-                              description=body.description)
+                              description=body.description,
+                              trial_weeks=body.trial_weeks)
     except PayPalError as e:
         raise upstream_error(e)
 
+    # trial_weeks 用關鍵字傳：位置傳的話，少收一個參數的假 store 會把它
+    # 吞進別的參數裡，測試照樣綠 —— 那種錯只有實跑才看得到。
     row = store.create(caller.caller_id, product["id"], plan["id"], body.name,
-                       amount, currency, body.interval_count)
+                       amount, currency, body.interval_count,
+                       trial_weeks=body.trial_weeks)
     return _out(row)
 
 
